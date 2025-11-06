@@ -8,7 +8,7 @@ using namespace std; // Not good practice but bite me lol
 int main() {
 	int choice;
 
-	cout << "Please input what you want to do:\n1. Train Model\n2. Chat with Model\n";
+	cout << "Please input what you want to do:\n1. Build Model Dictionary\n2. Build Model Weights\n3. Chat with Model\n";
 	cin >> choice;
 
 	if (cin.fail() || (choice != 1 && choice != 2)) { // Error handling for invalid input
@@ -17,16 +17,22 @@ int main() {
 	}
 
 	if (choice == 1) {
-		cout << "Training model..." << endl;
-
+		cout << "Building dictionary..." << endl;
 		training t;
-		t.train();
+
+		t.buildDictionary();
 
 	} else if (choice == 2) {
-		// Call chat function
-		cout << "Chatting with model..." << endl;
-		// Placeholder for chat code
+		cout << "Building weights..." << endl;
+		training t;
+
+		t.buildWeights;
+	} else if (choice == 3) {
+	 // Call chat function
+	 cout << "Chatting with model..." << endl;
+	 // Placeholder for chat code
 	}
+
 
 	return 0;
 }
