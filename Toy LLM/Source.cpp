@@ -26,7 +26,8 @@ int main() {
 		cout << "Building weights..." << endl;
 		training t;
 
-		t.buildWeights;
+		t.buildWeights();
+
 	} else if (choice == 3) {
 	 // Call chat function
 	 cout << "Chatting with model..." << endl;

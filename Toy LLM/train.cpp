@@ -3,15 +3,67 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include "IO.h"
 #include "train.h"
 #include "normalizer.h"
 #include <nlohmann/json.hpp>
 #include <mutex>
 #include <algorithm>
+#include <random>
 
 using json = nlohmann::json;
 
-/* Main training function */
+
+
+void training::buildWeights() {
+    int embedding_dim = 128; // Number of floats per token embedding
+
+    // Load dictionary: token -> ID
+    std::unordered_map<std::string, int> dictionary = read_dict();
+
+    // Load existing embeddings
+    std::vector<std::vector<float>> weights = read2DVector("../weights.txt");
+
+    // Random generator for initializing new embeddings
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dis(-1.0f, 1.0f); // [-1, 1]
+
+    // Prepare new vector to store embeddings aligned with dictionary
+    std::vector<std::vector<float>> new_weights;
+    new_weights.reserve(dictionary.size());
+
+    // Iterate through dictionary
+    for (const auto& [token, id] : dictionary) {
+        std::vector<float> vec;
+
+        // Preserve existing embedding if present
+        if (id < weights.size() && !weights[id].empty()) {
+            vec = weights[id];
+        }
+        else {
+            // Generate new random embedding
+            vec.resize(embedding_dim);
+            for (auto& val : vec)
+                val = dis(gen);
+        }
+
+        // Append embedding to new_weights
+        new_weights.push_back(vec);
+    }
+
+    // Save updated embeddings
+    write2DVector("../weights.txt", new_weights);
+
+    std::cout << "Weights updated. Total tokens: " << new_weights.size() << "\n";
+}
+
+
+
+
+
+/* Everything below is for building the model dictionary */
+
 void training::buildDictionary() {
     std::unordered_map<std::string, int> dictionary = read_dict(); // Load existing dictionary
 
