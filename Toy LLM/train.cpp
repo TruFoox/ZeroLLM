@@ -14,7 +14,7 @@
 
 using json = nlohmann::json;
 
-
+/* There are a lot of comments because this is a personal learning project */
 
 void training::buildWeights() {
     int embedding_dim = 128; // Number of floats per token embedding
@@ -24,21 +24,27 @@ void training::buildWeights() {
 
     // Generate embeddings from dictionary
     std::vector<std::vector<float>> updatedEmbeddings = generateEmbeddings(embedding_dim, dictionary);
-    
-    // Save updated embeddings
-    write2DVector("../embeddings.txt", updatedEmbeddings);
 
 	// Generate positional encodings
     std::vector<std::vector<float>> updatedPE = generatePE(embedding_dim, updatedEmbeddings);
     
-    // Save updated encodings
-    write2DVector("../positional encodings.txt", updatedPE);
+	// Merge embeddings and positional encodings
+	std::vector<std::vector<float>> finalEmbeddings(updatedEmbeddings.size(), std::vector<float>(embedding_dim, 0.0f));
+    
+    for (size_t i = 0; i < updatedEmbeddings.size(); ++i) {
+        for (int j = 0; j < embedding_dim; ++j) {
+            finalEmbeddings[i][j] = updatedEmbeddings[i][j] + updatedPE[i][j];
+        }
+    }
+
+    // Save updated embeddings
+    write2DVector("../embeddings.txt", finalEmbeddings);
 
     std::cout << "Embeddings updated. Total tokens: " << updatedEmbeddings.size() << "\n";
 }
 
 
-// Generate embeddings aligned with dictionary
+// Generate embeddings aligned with dictionary (Creates dictionary of words in training data for later)
 std::vector<std::vector<float>> training::generateEmbeddings(int embedding_dim, const std::unordered_map<std::string, int>& dictionary) {
 
     std::vector<std::vector<float>> embeddings = read2DVector("../embeddings.txt"); // Holds word meanings
@@ -47,7 +53,7 @@ std::vector<std::vector<float>> training::generateEmbeddings(int embedding_dim, 
     // Random generator for initializing new embeddings
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_real_distribution<float> dis(-1.0f, 1.0f); // [-1, 1]
+	std::uniform_real_distribution<float> dis((-1 * sqrt(embedding_dim)), sqrt(embedding_dim)); // Default range: [-sqrt(embedding_dim), sqrt(embedding_dim)] (Reason: It sounds about right lol)
 
     // Prepare new vector to store embeddings aligned with dictionary
     updatedEmbeddings.reserve(dictionary.size());
@@ -78,10 +84,10 @@ std::vector<std::vector<float>> training::generateEmbeddings(int embedding_dim, 
 
 
 
-// Generate positional encodings
+// Generate positional encodings (Adds a periodic signal (cos/sin) to embeddings based on token position to distinguish index 1 from 2, etc)
 std::vector<std::vector<float>> training::generatePE(const int embedding_dim, std::vector<std::vector<float>> updatedEmbeddings) {
     // Load existing encodings
-    std::vector<std::vector<float>> encodings = read2DVector("../positional encodings.txt"); // Holds position (Basically an index for each token in a sequence)
+    std::vector<std::vector<float>> encodings; // Holds position (Basically an index for each token in a sequence)
 
 	// Iterate through input tokens
     for (int pos = 0; pos < updatedEmbeddings.size(); ++pos) {
@@ -106,88 +112,72 @@ std::vector<std::vector<float>> training::generatePE(const int embedding_dim, st
 void training::buildDictionary() {
     std::unordered_map<std::string, int> dictionary = read_dict(); // Load existing dictionary
 
-    const size_t BUFFER_SIZE = 8192; // Only load 8kb at a time
-    std::ifstream file("../training_data.txt", std::ios::binary);
-
+    std::ifstream file("../training_data.txt");
     if (!file.is_open()) throw std::runtime_error("Error opening file");
 
-    std::vector<char> buffer(BUFFER_SIZE);
-    std::string leftover; // for split tokens across buffers
+    std::string data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+
+    for (char& c : data) { // Convert to lowercase
+        if (c >= 'A' && c <= 'Z') c |= 0x20;
+    }
+
+    while (!data.empty() && (data.back() & 0xC0) == 0x80)
+        data.pop_back();
+
+    data.erase( // Remove byte order marker from my lazy ass not harvesting the dataset properly
+        std::remove_if(data.begin(), data.end(), [](unsigned char c) {
+            return c == '\xEF' || c == '\xBB' || c == '\xBF';
+            }),
+        data.end()
+    );
+
+    std::string normalizedData = normalize(data);
+
     std::string delims = " ,!?-().\"[];:/–\n——&";
+    std::string current;
 
-    /* Start processing */
-    while (file.read(buffer.data(), buffer.size()) || file.gcount() > 0) {
-        std::streamsize bytesRead = file.gcount();
-        std::string data = leftover + std::string(buffer.begin(), buffer.begin() + bytesRead);
-       
+    /* Tokenization */
+    for (size_t i = 0; i < normalizedData.size(); ++i) {
+        char currentChar = normalizedData[i];
 
+        if (delims.find(currentChar) != std::string::npos) {
+            // Add word to dictionary if not already within
+            if (!current.empty()) {
+                define(current, dictionary);
+                current.clear();
+            }
 
-        // Then run normalize() and tokenization
-
-        for (char& c : data) { // Convert to lowercase
-            if (c >= 'A' && c <= 'Z') c |= 0x20;
+            // Define delimiter as a token
+            std::string delimToken(1, currentChar);
+            define(delimToken, dictionary);
+        }
+        else {
+            current += currentChar;
         }
 
-        while (!data.empty() && (data.back() & 0xC0) == 0x80)
-            data.pop_back();
-
-        data.erase( // Remove byte order marker from my lazy ass not harvesting the dataset properly
-            std::remove_if(data.begin(), data.end(),[](unsigned char c) {
-                    return c == '\xEF' || c == '\xBB' || c == '\xBF';
-                }),
-            data.end()
-        );
-
-        std::string normalizedData = normalize(data);
-
-        leftover.clear();
-        std::string current;
-
-
-        /* Tokenization */
-        for (size_t i = 0; i < normalizedData.size(); ++i) {
-            char currentChar = normalizedData[i];
-
-            if (delims.find(currentChar) != std::string::npos) {
-                // Add word to dictionary if not already within
-                if (!current.empty()) {
-                    define(current, dictionary);
-
-                    current.clear();
-                }
-                
-				// Define delimiter as a token
-                std::string delimToken(1, currentChar);
-
-                define(delimToken, dictionary);
-            }
-            else {
-                current += currentChar;
-            }
-
-            /* Edge case, odd-grammar handling (like when ' is used instead of ") */
-            if (currentChar == '\'' && (normalizedData[i + 1] == ' ' || normalizedData[i - 1] == ' ')) { // If ' is right next to a space, treat as delimiter
-                std::string delimToken(1, currentChar);
-
-                define(delimToken, dictionary);
-            }
-
-            if (i % 10 == 0) {
-                write_dict(dictionary); // Periodically save dictionary to avoid data loss
-            }
+        /* Edge case, odd-grammar handling (like when ' is used instead of ") */
+        if (currentChar == '\'' &&
+            ((i + 1 < normalizedData.size() && normalizedData[i + 1] == ' ') ||
+                (i > 0 && normalizedData[i - 1] == ' '))) { // If ' is right next to a space, treat as delimiter
+            std::string delimToken(1, currentChar);
+            define(delimToken, dictionary);
         }
 
-        write_dict(dictionary);
-
-        leftover = current;  // carry over partial token
+        if (i % 100 == 0) {
+            write_dict(dictionary); // Periodically save dictionary to avoid data loss
+        }
     }
 
-	if (!leftover.empty()) { // If there is a word that was cut off by the buffer size, add it
-        define(leftover, dictionary); 
+    if (!current.empty()) { // If there is a word that was cut off by the buffer size, add it
+        define(current, dictionary);
     }
+
+    write_dict(dictionary);
 
     std::cout << "Total tokens: " << dictionary.size() << std::endl;
 }
+
 
 
 

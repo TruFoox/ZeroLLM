@@ -7,6 +7,8 @@
 I put this in a seperate file because I did not make it.
 
 Tokenization is the worst part of making an LLM, in my opinion, and I REALLY did not want want to deal with this normalization bullshit
+
+I asked chatgpt to make this. Screw normalizing text. I could do this in java with a single line.
 */
 
 std::string normalize(const std::string& input) {
@@ -16,10 +18,10 @@ std::string normalize(const std::string& input) {
     int utf16Size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, input.c_str(), (int)input.size(), nullptr, 0);
     std::wstring wide;
     if (utf16Size == 0) {
-        // Replace invalid UTF-8 bytes with '?'
+        // Replace invalid UTF-8 bytes with '<err>'
         wide.resize(input.size());
         for (size_t i = 0; i < input.size(); ++i)
-            wide[i] = static_cast<unsigned char>(input[i]) < 128 ? input[i] : L'?';
+            wide[i] = static_cast<unsigned char>(input[i]) < 128 ? input[i] : L'<err>';
     }
     else {
         wide.resize(utf16Size);
@@ -27,7 +29,7 @@ std::string normalize(const std::string& input) {
             wide.clear();
             wide.resize(input.size());
             for (size_t i = 0; i < input.size(); ++i)
-                wide[i] = static_cast<unsigned char>(input[i]) < 128 ? input[i] : L'?';
+                wide[i] = static_cast<unsigned char>(input[i]) < 128 ? input[i] : L'<err>';
         }
     }
 
