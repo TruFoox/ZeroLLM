@@ -17,18 +17,21 @@ using json = nlohmann::json;
 /* There are a lot of comments because this is a personal learning project */
 
 void training::buildWeights() {
-    int embedding_dim = 128; // Number of floats per token embedding
+    int embedding_dim = 768; // Number of floats per token embedding
 
     // Load dictionary: token, ID
     std::unordered_map<std::string, int> dictionary = read_dict();
 
+	std::cout << "Generating embeddings...\n";
     // Generate embeddings from dictionary
     std::vector<std::vector<float>> updatedEmbeddings = generateEmbeddings(embedding_dim, dictionary);
 
-	// Generate positional encodings
+    // Generate positional encodings
+	std::cout << "Generating positional encodings...\n";
     std::vector<std::vector<float>> updatedPE = generatePE(embedding_dim, updatedEmbeddings);
     
-	// Merge embeddings and positional encodings
+    // Merge embeddings and positional encodings
+	std::cout << "Combining embeddings and positional encodings...\n";
 	std::vector<std::vector<float>> finalEmbeddings(updatedEmbeddings.size(), std::vector<float>(embedding_dim, 0.0f));
     
     for (size_t i = 0; i < updatedEmbeddings.size(); ++i) {
@@ -41,19 +44,30 @@ void training::buildWeights() {
     write2DVector("../embeddings.txt", finalEmbeddings);
 
     std::cout << "Embeddings updated. Total tokens: " << updatedEmbeddings.size() << "\n";
+
+	// Generate weight matrices
+    std::cout << "Generating weight matrices...\n";
+    std::vector<std::vector<std::vector<float>>> weights = generateWeights(embedding_dim);
+
+    // Save weight matrices
+    write3DVector("../weights.txt", weights);
 }
 
 
 // Generate embeddings aligned with dictionary (Creates dictionary of words in training data for later)
-std::vector<std::vector<float>> training::generateEmbeddings(int embedding_dim, const std::unordered_map<std::string, int>& dictionary) {
+std::vector<std::vector<float>> training::generateEmbeddings(const int embedding_dim, const std::unordered_map<std::string, int>& dictionary) {
 
-    std::vector<std::vector<float>> embeddings = read2DVector("../embeddings.txt"); // Holds word meanings
+    std::vector<std::vector<float>> embeddings(embedding_dim, std::vector<float>(embedding_dim, 0.0f));
+
 	std::vector<std::vector<float>> updatedEmbeddings; // New embeddings aligned with dictionary
 
     // Random generator for initializing new embeddings
     std::random_device rd;
     std::mt19937 gen(rd());
-	std::uniform_real_distribution<float> dis((-1 * sqrt(embedding_dim)), sqrt(embedding_dim)); // Default range: [-sqrt(embedding_dim), sqrt(embedding_dim)] (Reason: It sounds about right lol)
+
+	// Default value range for embeddings
+     // Default range: [-1/sqrt(embedding_dim), 1/sqrt(embedding_dim)] (Reason: It sounds about right, & it scales with larger dimensions)
+	std::uniform_real_distribution<float> dis((-1.0f / sqrt(embedding_dim)), 1.0f / sqrt(embedding_dim));
 
     // Prepare new vector to store embeddings aligned with dictionary
     updatedEmbeddings.reserve(dictionary.size());
@@ -70,8 +84,9 @@ std::vector<std::vector<float>> training::generateEmbeddings(int embedding_dim, 
         else {
             // Generate new random embedding
             vec.resize(embedding_dim);
-            for (auto& val : vec)
+            for (auto& val : vec) {
                 val = dis(gen);
+            }
         }
 
         // Append embedding to new_weights
@@ -80,8 +95,6 @@ std::vector<std::vector<float>> training::generateEmbeddings(int embedding_dim, 
 
     return updatedEmbeddings;
 }
-
-
 
 
 // Generate positional encodings (Adds a periodic signal (cos/sin) to embeddings based on token position to distinguish index 1 from 2, etc)
@@ -106,6 +119,35 @@ std::vector<std::vector<float>> training::generatePE(const int embedding_dim, st
         
 	return encodings;
 }
+
+
+std::vector<std::vector<std::vector<float>>> training::generateWeights(const int embedding_dim) {
+    // Random generator for initializing new embeddings
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    // Default value range for embeddings
+     // Default range: [-1/sqrt(embedding_dim), 1/sqrt(embedding_dim)] (Reason: It sounds about right, & it scales with larger dimensions)
+    std::uniform_real_distribution<float> dis((-1.0f / sqrt(embedding_dim)), 1.0f / sqrt(embedding_dim));
+
+    // Allocate 3D vector: 4 matrices x embedding_dim x embedding_dim
+    std::vector<std::vector<std::vector<float>>> weights(4, std::vector<std::vector<float>>(embedding_dim, std::vector<float>(embedding_dim)));
+
+    /* Iterate through all weight matrices (4 per embedding dimension: Q,K,V,Output) & add random values */
+	for (int i = 0; i < 4; ++i) { // For each weight matrix type:
+
+		for (int j = 0; j < embedding_dim; ++j) { // Fill each value in matrix with random float
+            for (int k = 0; k < embedding_dim; ++k) {
+                weights[i][j][k] = dis(gen);
+            }
+        }
+    }
+	return weights;
+}
+
+
+
+
 
 /* Everything below is for building the model dictionary */
 
@@ -134,8 +176,8 @@ void training::buildDictionary() {
 
     std::string normalizedData = normalize(data);
 
-    std::string delims = " ,!?-().\"[];:/–\n——&";
-    std::string current;
+    std::string delims = " ,!?-().\"[];:/–\n——&{}";
+    std::string currentWord;
 
     /* Tokenization */
     for (size_t i = 0; i < normalizedData.size(); ++i) {
@@ -143,9 +185,9 @@ void training::buildDictionary() {
 
         if (delims.find(currentChar) != std::string::npos) {
             // Add word to dictionary if not already within
-            if (!current.empty()) {
-                define(current, dictionary);
-                current.clear();
+            if (!currentWord.empty()) {
+                define(currentWord, dictionary);
+                currentWord.clear();
             }
 
             // Define delimiter as a token
@@ -153,7 +195,7 @@ void training::buildDictionary() {
             define(delimToken, dictionary);
         }
         else {
-            current += currentChar;
+            currentWord += currentChar;
         }
 
         /* Edge case, odd-grammar handling (like when ' is used instead of ") */
@@ -169,8 +211,8 @@ void training::buildDictionary() {
         }
     }
 
-    if (!current.empty()) { // If there is a word that was cut off by the buffer size, add it
-        define(current, dictionary);
+    if (!currentWord.empty()) { // If there is a word that was cut off by the buffer size, add it
+        define(currentWord, dictionary);
     }
 
     write_dict(dictionary);

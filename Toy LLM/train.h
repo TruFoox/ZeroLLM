@@ -15,10 +15,15 @@ public:
     void buildWeights();
 
     /* Generate embeddings for the dictionary */
-    std::vector<std::vector<float>> generateEmbeddings(int embedding_dim, const std::unordered_map<std::string, int>& dictionary);
+    std::vector<std::vector<float>> generateEmbeddings(const int embedding_dim, const std::unordered_map<std::string, int>& dictionary);
 
     /* Generate positional encodings for the dictionary */
     std::vector<std::vector<float>> generatePE(const int embedding_dim, std::vector<std::vector<float>> updatedEmbeddings);
+
+    /* Generate weight matrices */
+    std::vector<std::vector<std::vector<float>>> generateWeights(const int embedding_dim);
+
+
 
     /* Encode text to tokens */
    void define(const std::string& text, std::unordered_map<std::string, int>& dictionary);
