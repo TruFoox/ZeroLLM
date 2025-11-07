@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <math.h>
 #include "IO.h"
 #include "train.h"
 #include "normalizer.h"
@@ -18,11 +19,30 @@ using json = nlohmann::json;
 void training::buildWeights() {
     int embedding_dim = 128; // Number of floats per token embedding
 
-    // Load dictionary: token -> ID
+    // Load dictionary: token, ID
     std::unordered_map<std::string, int> dictionary = read_dict();
 
-    // Load existing embeddings
-    std::vector<std::vector<float>> weights = read2DVector("../weights.txt");
+    // Generate embeddings from dictionary
+    std::vector<std::vector<float>> updatedEmbeddings = generateEmbeddings(embedding_dim, dictionary);
+    
+    // Save updated embeddings
+    write2DVector("../embeddings.txt", updatedEmbeddings);
+
+	// Generate positional encodings
+    std::vector<std::vector<float>> updatedPE = generatePE(embedding_dim, updatedEmbeddings);
+    
+    // Save updated encodings
+    write2DVector("../positional encodings.txt", updatedPE);
+
+    std::cout << "Embeddings updated. Total tokens: " << updatedEmbeddings.size() << "\n";
+}
+
+
+// Generate embeddings aligned with dictionary
+std::vector<std::vector<float>> training::generateEmbeddings(int embedding_dim, const std::unordered_map<std::string, int>& dictionary) {
+
+    std::vector<std::vector<float>> embeddings = read2DVector("../embeddings.txt"); // Holds word meanings
+	std::vector<std::vector<float>> updatedEmbeddings; // New embeddings aligned with dictionary
 
     // Random generator for initializing new embeddings
     std::random_device rd;
@@ -30,16 +50,16 @@ void training::buildWeights() {
     std::uniform_real_distribution<float> dis(-1.0f, 1.0f); // [-1, 1]
 
     // Prepare new vector to store embeddings aligned with dictionary
-    std::vector<std::vector<float>> new_weights;
-    new_weights.reserve(dictionary.size());
+    updatedEmbeddings.reserve(dictionary.size());
 
     // Iterate through dictionary
     for (const auto& [token, id] : dictionary) {
-        std::vector<float> vec;
+
+		std::vector<float> vec; // Stores embedding for current token
 
         // Preserve existing embedding if present
-        if (id < weights.size() && !weights[id].empty()) {
-            vec = weights[id];
+        if (id < embeddings.size() && !embeddings[id].empty()) {
+            vec = embeddings[id];
         }
         else {
             // Generate new random embedding
@@ -49,18 +69,37 @@ void training::buildWeights() {
         }
 
         // Append embedding to new_weights
-        new_weights.push_back(vec);
+        updatedEmbeddings.push_back(vec);
     }
 
-    // Save updated embeddings
-    write2DVector("../weights.txt", new_weights);
-
-    std::cout << "Weights updated. Total tokens: " << new_weights.size() << "\n";
+    return updatedEmbeddings;
 }
 
 
 
 
+// Generate positional encodings
+std::vector<std::vector<float>> training::generatePE(const int embedding_dim, std::vector<std::vector<float>> updatedEmbeddings) {
+    // Load existing encodings
+    std::vector<std::vector<float>> encodings = read2DVector("../positional encodings.txt"); // Holds position (Basically an index for each token in a sequence)
+
+	// Iterate through input tokens
+    for (int pos = 0; pos < updatedEmbeddings.size(); ++pos) {
+        std::vector<float> vec; // Stores encodings for current token
+
+		for (int dim = 0; dim < embedding_dim; ++dim) { // Generate 2d PE matrix
+
+            // Calculate positional encoding (Even & odd dimension sizes require different formulas)
+            if (dim % 2 == 0) {vec.push_back(sin(pos / pow(10000.0, 2.0 * floor(dim / 2.0) / embedding_dim)));}
+            else {vec.push_back(cos(pos / pow(10000.0, 2.0 * floor(dim / 2.0) / embedding_dim)));};
+        }
+
+        // Add positional encodings
+        encodings.push_back(vec);
+    }
+        
+	return encodings;
+}
 
 /* Everything below is for building the model dictionary */
 
@@ -113,11 +152,13 @@ void training::buildDictionary() {
                 // Add word to dictionary if not already within
                 if (!current.empty()) {
                     define(current, dictionary);
+
                     current.clear();
                 }
                 
 				// Define delimiter as a token
                 std::string delimToken(1, currentChar);
+
                 define(delimToken, dictionary);
             }
             else {
@@ -127,10 +168,16 @@ void training::buildDictionary() {
             /* Edge case, odd-grammar handling (like when ' is used instead of ") */
             if (currentChar == '\'' && (normalizedData[i + 1] == ' ' || normalizedData[i - 1] == ' ')) { // If ' is right next to a space, treat as delimiter
                 std::string delimToken(1, currentChar);
+
                 define(delimToken, dictionary);
+            }
+
+            if (i % 10 == 0) {
+                write_dict(dictionary); // Periodically save dictionary to avoid data loss
             }
         }
 
+        write_dict(dictionary);
 
         leftover = current;  // carry over partial token
     }
@@ -144,30 +191,31 @@ void training::buildDictionary() {
 
 
 
-void training::define(const std::string& text, std::unordered_map<std::string, int>& dictionary) { // Define new token in dictionary
+void training::define(const std::string& text, std::unordered_map<std::string, int>& dictionary) {
+    // Define new token in dictionary
     if (text.empty() || text.find('\0') != std::string::npos) return; // skip nulls
 
-	if (dictionary.find(text) == dictionary.end()) { // If token not in dictionary
-		dictionary[text] = dictionary.size(); // Get next available value
-
-        write_dict(dictionary);
+    if (dictionary.find(text) == dictionary.end()) { // If token not in dictionary
+        dictionary[text] = dictionary.size(); // Get next available value
 
         std::cout << "Token: \"" << text << "\" added to dictionary\n";
     }
     else if (text != " ") {
-        //std::cout << "Token: \"" << text << "\" already in dictionary\n";
+        // Token already exists, do nothing
+        // std::cout << "Token: \"" << text << "\" already in dictionary\n";
     }
 }
 
 
-std::string training::decode(const std::vector<int>& tokens, std::unordered_map<std::string, int>& dictionary) { // Decode tokens to text
+
+std::string training::decode(const std::vector<int>& tokens, const std::unordered_map<std::string, int>& dictionary) { // Decode tokens to text
 
 	std::vector<std::string> result; // vector to hold final string
 
     for (const int token : tokens) {
-        for (const auto& pair : vocab) {
+        for (const auto& pair : vocab) { // pair.first = key, pair.second = value
             if (pair.second == token) {
-				result.push_back(pair.first); // pair.first = key, pair.second = value
+				result.push_back(pair.first);
             }
         }
 	}
