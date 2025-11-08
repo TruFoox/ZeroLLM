@@ -51,9 +51,10 @@ std::string normalize(const std::string& input) {
         if (wc == L'\n' || wc == L'\r') {
             cleaned += L' ';
         }
-        else if (wc != L'*' && wc != L'_' && wc != L'\t' && wc != L'"' && wc != L'\'') {
+        else if (wc != L'*' && wc != L'_' && wc != L'\t' && wc != L'"') {
             cleaned += wc;
         }
+
     }
 
     // Step 4: Convert back to UTF-8

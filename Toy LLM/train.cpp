@@ -169,16 +169,22 @@ std::vector<int> training::makeSequence(const std::string& data, const std::unor
     std::string currentWord;
     std::vector<int> tokenizedString;
 
+	std::string dataLower = data; // Cant do const on a non mutable string
+
+    for (char& c : dataLower) { // Convert to lowercase
+        if (c >= 'A' && c <= 'Z') c |= 0x20;
+    }
+
     /* Tokenization */
-    for (size_t i = 0; i < data.size(); ++i) {
-        char currentChar = data[i];
+    for (size_t i = 0; i < dataLower.size(); ++i) {
+        char currentChar = dataLower[i];
 
         bool isDelimiter = delims.find(currentChar) != std::string::npos;
 
         // Special handling for apostrophes
         if (currentChar == '\'') {
-            bool prevIsLetter = (i > 0 && std::isalpha(data[i - 1]));
-            bool nextIsLetter = (i + 1 < data.size() && std::isalpha(data[i + 1]));
+            bool prevIsLetter = (i > 0 && std::isalpha(dataLower[i - 1]));
+            bool nextIsLetter = (i + 1 < dataLower.size() && std::isalpha(dataLower[i + 1]));
 
             if (prevIsLetter && nextIsLetter) {
                 // Internal apostrophe - part of the word
@@ -196,6 +202,10 @@ std::vector<int> training::makeSequence(const std::string& data, const std::unor
                 tokenizedString.push_back(encode(currentWord, dictionary));
                 currentWord.clear();
             }
+
+            // Include delimiter itself as token (except for whitespace)
+            std::string delimStr(1, currentChar);
+            tokenizedString.push_back(encode(delimStr, dictionary));
         }
         else {
             currentWord += currentChar;
@@ -377,6 +387,14 @@ void training::write_dict(const std::unordered_map<std::string, int>& dict) {
 std::unordered_map<std::string, int> training::read_dict() {
     std::ifstream in("../dictionary.json");
     nlohmann::json j;
-    in >> j;
+
+    // Check if file opened successfully
+    if (!in.is_open()) {return {};}
+
+    try {in >> j;} catch (...) {return {};}
+
+    // Return empty map if JSON is null, not an object, or empty
+    if (j.is_null() || !j.is_object() || j.empty()) {return {};}
+
     return j.get<std::unordered_map<std::string, int>>();
 }

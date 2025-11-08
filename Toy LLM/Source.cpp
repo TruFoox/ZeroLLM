@@ -11,27 +11,35 @@ int main() {
 	cout << "Please input what you want to do:\n1. Build Model Dictionary\n2. Build Model Weights\n3. Chat with Model\n";
 	cin >> choice;
 
-	if (cin.fail() || (choice != 1 && choice != 2)) { // Error handling for invalid input
+	if (cin.fail() || (choice != 1 && choice != 2 && choice != 3)) { // Error handling for invalid input
 		cerr << "Input error!" << endl;
 		return 1;
 	}
 
-	if (choice == 1) {
-		cout << "Building dictionary..." << endl;
+	if (choice == 1) {;
 		training t;
 
 		t.buildDictionary();
 
 	} else if (choice == 2) {
-		cout << "Building weights..." << endl;
 		training t;
 
 		t.buildWeights();
 
 	} else if (choice == 3) {
-	 // Call chat function
-	 cout << "Chatting with model..." << endl;
-	 // Placeholder for chat code
+		cout << "Input a message to the model:" << endl;
+
+		string input;
+
+		std::cin >> std::ws; // Remove whitespace
+		std::getline(std::cin, input);
+		training t; 
+		vector<int> i = t.makeSequence(input, t.read_dict());
+		
+		for (size_t j = 0; j < i.size(); ++j) {
+			cout << i[j] << " ";
+		}
+
 	}
 
 
