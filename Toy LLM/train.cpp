@@ -5,10 +5,12 @@
 #include <sstream>
 #include <math.h>
 #include "IO.h"
+#include "doMath.h"
 #include "train.h"
 #include "normalizer.h"
 #include <nlohmann/json.hpp>
 #include <mutex>
+#include <numeric>
 #include <algorithm>
 #include <random>
 
@@ -35,7 +37,7 @@ void training::buildWeights() {
 	std::cout << "Combining embeddings and positional encodings...\n";
 	std::vector<std::vector<float>> finalEmbeddings(updatedEmbeddings.size(), std::vector<float>(embedding_dim, 0.0f));
     
-    for (size_t i = 0; i < updatedEmbeddings.size(); ++i) { // Combine them
+    for (int i = 0; i < updatedEmbeddings.size(); ++i) { // Combine them
         for (int j = 0; j < embedding_dim; ++j) {
             finalEmbeddings[i][j] = updatedEmbeddings[i][j] + updatedPE[i][j];
         }
@@ -44,7 +46,7 @@ void training::buildWeights() {
     // Save updated embeddings
     write2DVector("../embeddings.txt", finalEmbeddings);
 
-    std::cout << "Embeddings updated. Total tokens: " << updatedEmbeddings.size() << "\n";
+    std::cout << "Embeddings updated. Total tokens: " << finalEmbeddings.size() << "\n";
 
 	// Generate weight matrices
     std::cout << "Generating weight matrices...\n";
@@ -53,19 +55,73 @@ void training::buildWeights() {
     // Save weight matrices
     write3DVector("../weights.txt", weights);
 
-    std::ifstream file("../training_data.txt");
-    if (!file.is_open()) throw std::runtime_error("Error opening file");
 
+
+    /* Start training weights */
+
+    std::ifstream file("../training_data.txt"); // Load training data
+    if (!file.is_open()) throw std::runtime_error("Error opening file");
+    
     std::string data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 
-    // Get # of sequences
+    // Get total # of sequences in training data
     std::vector<int> sequence = makeSequence(data, dictionary);
     int totalSequences = (sequence.size() + 127) / 128; // ceil division
 
+
+	// Training loop
     for (int i = 0; i < totalSequences; i++) {
-        int start = i * 128;
-        int end = std::min(start + 128, (int)sequence.size());
-        std::vector<int> currentSequence(sequence.begin() + start, sequence.begin() + end);
+		int sequenceLength = 128; // Fixed sequence length
+
+		int start = i * sequenceLength; // Start index of current sequence
+		int end = std::min(start + sequenceLength, (int)sequence.size()); // End index of current sequence
+
+        std::vector<int> tokenSequence(sequence.begin() + start, sequence.begin() + end); // Holds tokenized sequence
+		std::vector<std::vector<float>> vectorSequence; // Holds vectorized sequence
+
+		for (int token : tokenSequence) { // For every token in sequence, convert it into its embedding vector
+            std::vector<float> vec;
+
+            vec = finalEmbeddings[token];  // Get embedding vector of this token
+            vectorSequence.push_back(vec); // Store this token's embedding in the sequence
+		}
+
+		// Forward pass (Computing outputs based on current weights/inputs)
+		std::vector<std::vector<float>> Q = matMul(vectorSequence, weights[0]); // Query
+        std::vector<std::vector<float>> K = matMul(vectorSequence, weights[1]); // Key
+        std::vector<std::vector<float>> V = matMul(vectorSequence, weights[2]); // Value
+
+        std::vector<std::vector<float>> attentionScores = matMul(Q, transpose(K)); // Calculate attention scores
+
+        std::vector<std::vector<float>> attentionWeights;
+        attentionWeights.resize(sequenceLength, std::vector<float>(sequenceLength)); // Stores attention weights
+
+        // Scale all scores by sqrt(embedding_dim)
+        for (int m = 0; m < attentionScores.size(); ++m) {
+            for (int n = 0; n < attentionScores[m].size(); ++n) {
+                attentionScores[m][n] /= sqrt(embedding_dim);
+            }
+        }
+
+		for (int i = 0; i < sequenceLength; ++i) { // If j > i, attention score is -infinity (masks future tokens)
+            for (int j = i + 1; j < sequenceLength; ++j) {
+                attentionScores[i][j] = -1e9;
+            }
+        }
+
+        
+        for (int i = 0; i < sequenceLength; ++i) {
+			attentionWeights[i] = softmax(attentionScores[i]);
+        }
+
+		std::vector<std::vector<float>> context = matMul(attentionWeights, V); // Stores weighted sum of the value vectors, per token
+
+		std::vector<std::vector<float>> output = matMul(context, weights[3]); // Final output of attention head
+
+
+		// Backward pass (Figure out how wrong we were, and adjust weights accordingly)
+
+
     }
 
 
@@ -176,7 +232,7 @@ std::vector<int> training::makeSequence(const std::string& data, const std::unor
     }
 
     /* Tokenization */
-    for (size_t i = 0; i < dataLower.size(); ++i) {
+    for (int i = 0; i < dataLower.size(); ++i) {
         char currentChar = dataLower[i];
 
         bool isDelimiter = delims.find(currentChar) != std::string::npos;
@@ -253,7 +309,7 @@ void training::buildDictionary() {
     std::string currentWord;
 
     /* Tokenization */
-    for (size_t i = 0; i < normalizedData.size(); ++i) {
+    for (int i = 0; i < normalizedData.size(); ++i) {
         char currentChar = normalizedData[i];
 
         bool isDelimiter = delims.find(currentChar) != std::string::npos;

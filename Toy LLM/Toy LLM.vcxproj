@@ -137,6 +137,7 @@
     <ClCompile Include="train.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="doMath.h" />
     <ClInclude Include="IO.h" />
     <ClInclude Include="normalizer.h" />
     <ClInclude Include="train.h" />
