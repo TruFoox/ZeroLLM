@@ -20,7 +20,9 @@ using json = nlohmann::json;
 void training::buildWeights() {
     int embedding_dim = 768;
     float learning_rate = 0.001f;
+
     char input;
+    int intput; // Stores user inputs
 
 	std::cout << "Build new model weights? (y/n): ";
     std::cin >> input;
@@ -59,14 +61,40 @@ void training::buildWeights() {
         std::cout << "Generating weight matrices...\n";
         weights = generateWeights(embedding_dim, vocab_size);
         write3DVector("../weights.txt", weights);
+
+        intput = 0;
     }
     else {
         // Load existing embeddings and weights
         std::cout << "Loading existing embeddings and weights...\n";
         finalEmbeddings = read2DVector("../embeddings.txt", embedding_dim);
         weights = read3DVector("../weights.txt", embedding_dim);
+
         if (finalEmbeddings.empty() || weights.empty())
             throw std::runtime_error("No existing embeddings or weights found. Please build first!");
+
+        // Ensure correct shapes
+        if (weights.size() < 4) {
+            std::cout << "Fixing incomplete weights...\n";
+            weights.resize(4, std::vector<std::vector<float>>(embedding_dim, std::vector<float>(embedding_dim, 0.0f)));
+            weights[3] = std::vector<std::vector<float>>(embedding_dim, std::vector<float>(vocab_size, 0.0f));
+        }
+        else {
+            for (size_t w = 0; w < weights.size(); ++w) {
+                if (weights[w].empty()) continue;
+
+                // Fix Q, K, V
+                if (w < 3 && weights[w][0].size() != embedding_dim)
+                    weights[w] = std::vector<std::vector<float>>(embedding_dim, std::vector<float>(embedding_dim, 0.0f));
+
+                // Fix WO
+                else if (w == 3 && weights[w][0].size() != vocab_size)
+                    weights[w] = std::vector<std::vector<float>>(embedding_dim, std::vector<float>(vocab_size, 0.0f));
+            }
+        }
+
+        std::cout << "Input previous sequence number: ";
+        std::cin >> intput;
     }
 
     /* Start training weights */
@@ -86,9 +114,10 @@ void training::buildWeights() {
     std::vector<std::vector<float>> context;
     std::vector<std::vector<float>> output;
 
+
     // Training loop over sequences of length 128
-    for (int i = 0; i < totalSequences; i++) {
-        std::cout << "Training sequence #" << (i + 1) << "...\n";
+    for (int i = intput; i < totalSequences; i++) {
+        std::cout << "Training sequence #" << (i + 1) << "/" << totalSequences << "...\n";
 
         int start = i * 128;
         int end = std::min(start + 128, (int)sequence.size());
@@ -192,10 +221,43 @@ void training::buildWeights() {
             }
         }
 
+        /* Calculate gradient for embeddings */
+        std::vector<std::vector<float>> gradEmbeddings(sequenceLength, std::vector<float>(embedding_dim, 0.0f));
+
+        // Stores contribution from Q/K/V
+        std::vector<std::vector<float>> temp;
+
+        // Q contribution
+        temp = matMul(dQ, transpose(weights[0]));
+        for (int t = 0; t < sequenceLength; ++t)
+            for (int d = 0; d < embedding_dim; ++d)
+                gradEmbeddings[t][d] += temp[t][d];
+
+        // K contribution
+        temp = matMul(dK, transpose(weights[1]));
+        for (int t = 0; t < sequenceLength; ++t)
+            for (int d = 0; d < embedding_dim; ++d)
+                gradEmbeddings[t][d] += temp[t][d];
+
+        // V contribution
+        temp = dContext;
+        for (int t = 0; t < sequenceLength; ++t)
+            for (int d = 0; d < embedding_dim; ++d)
+                gradEmbeddings[t][d] += temp[t][d];
+
+        // Clip gradient
+        training::clip(gradEmbeddings, 1.0f);
+
+        // Update embeddings (subtract with learning rate)
+        for (int t = 0; t < sequenceLength; ++t)
+            for (int d = 0; d < embedding_dim; ++d)
+                finalEmbeddings[tokenSequence[t]][d] -= learning_rate * gradEmbeddings[t][d];
 
         // Save updated weights
-        if (i % 3 == 0) 
+        if (i % 3 == 0)
+            std::cout << "Writing to file. DO NOT QUIT\r";
             write3DVector("../weights.txt", weights);
+            write2DVector("../embeddings.txt", finalEmbeddings);
 
     }
 }

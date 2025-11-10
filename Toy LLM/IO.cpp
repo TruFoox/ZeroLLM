@@ -75,6 +75,7 @@ void write3DVector(const std::string& filename, const std::vector<std::vector<st
 std::vector<std::vector<std::vector<float>>> read3DVector(const std::string& filename, const int embedding_dim) {
     std::ifstream in(filename);
     std::vector<std::vector<std::vector<float>>> vec3D;
+
     if (!in) {
         std::cerr << "Error opening file for reading: " << filename << "\n";
         return vec3D;
@@ -84,7 +85,7 @@ std::vector<std::vector<std::vector<float>>> read3DVector(const std::string& fil
     std::vector<std::vector<float>> mat;
 
     while (std::getline(in, line)) {
-        if (line.empty()) { // blank line = next 2D slice
+        if (line.empty()) { // blank line = end of a slice
             if (!mat.empty()) {
                 vec3D.push_back(mat);
                 mat.clear();
@@ -95,16 +96,36 @@ std::vector<std::vector<std::vector<float>>> read3DVector(const std::string& fil
         std::istringstream iss(line);
         std::vector<float> row;
         float val;
-        while (iss >> val) row.push_back(val);
+        while (iss >> val)
+            row.push_back(val);
 
-        if (row.size() < embedding_dim) row.resize(embedding_dim, 0.0f); // pad row
+        // Pad every row to embedding_dim
+        if (row.size() < (size_t)embedding_dim)
+            row.resize(embedding_dim, 0.0f);
+
         mat.push_back(row);
     }
 
-    if (!mat.empty()) vec3D.push_back(mat); // last slice
+    if (!mat.empty())
+        vec3D.push_back(mat); // push final slice
 
-    for (auto& m : vec3D)
-        if (m.size() < embedding_dim) m.resize(embedding_dim, std::vector<float>(embedding_dim, 0.0f)); // pad matrix
+    // Fix all matrices to be perfect squares
+    for (auto& m : vec3D) {
+        // Find the widest row
+        size_t maxCols = 0;
+        for (auto& r : m)
+            if (r.size() > maxCols) maxCols = r.size();
+
+        // Pad all rows to maxCols
+        for (auto& r : m)
+            if (r.size() < maxCols)
+                r.resize(maxCols, 0.0f);
+
+        // Pad rows if needed
+        if (m.size() < (size_t)embedding_dim)
+            m.resize(embedding_dim, std::vector<float>(maxCols, 0.0f));
+    }
 
     return vec3D;
 }
+
