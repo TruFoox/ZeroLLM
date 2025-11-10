@@ -267,15 +267,16 @@ void training::buildWeights() {
                     localEmbeddings[tokenSequence[t]][d] -= learning_rate * gradEmbeddings[t][d];
 
             // Merge updates
-            {
-                std::lock_guard<std::mutex> lock(updateMutex);
-                weights = localWeights;
-                finalEmbeddings = localEmbeddings;
-            }
+            std::lock_guard<std::mutex> lock(updateMutex);
+            for (int m = 0; m < weights.size(); ++m)
+                for (int i = 0; i < weights[m].size(); ++i)
+                    for (int j = 0; j < weights[m][i].size(); ++j)
+                        weights[m][i][j] += localWeights[m][i][j] - weights[m][i][j];
 
 
 
-            if (i % 3 == 0) {
+
+            if (i % 10 == 0) {
                 std::cout << "Writing to file. DO NOT QUIT\r";
                 write3DVector("../weights.txt", weights);
                 write2DVector("../embeddings.txt", finalEmbeddings);
