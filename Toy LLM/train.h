@@ -30,6 +30,7 @@ public:
 
     /* Write new word to dictionary */
     void define(const std::string& text, std::unordered_map<std::string, int>& dictionary);
+    void loop(int embedding_dim, int intput, int threadnum, std::unordered_map<std::string, int> dictionary, std::vector<std::vector<float>> finalEmbeddings, std::vector<std::vector<std::vector<float>>> weights);
 
     /* Decode tokens back to text */
     std::string decode(const std::vector<int>& tokens, const std::unordered_map<std::string, int>& dictionary);

@@ -16,10 +16,12 @@
 
 using json = nlohmann::json;
 
+std::mutex updateMutex; // protects shared weights/embeddings
+
 /* There are a lot of comments because this is a personal learning project */
 void training::buildWeights() {
     int embedding_dim = 768;
-    float learning_rate = 0.01f; // Set to 0.001 for finer training later
+
 
     char input;
     int intput; // Stores user inputs
@@ -98,11 +100,7 @@ void training::buildWeights() {
     }
 
     /* Start training weights */
-    std::vector<std::vector<float>> gradWQ(embedding_dim, std::vector<float>(embedding_dim));
-    std::vector<std::vector<float>> gradWK(embedding_dim, std::vector<float>(embedding_dim));
-    std::vector<std::vector<float>> gradWV(embedding_dim, std::vector<float>(embedding_dim));
 
-    std::cout << "Training model...\n";
     std::ifstream file("../training_data.txt");
     if (!file.is_open()) throw std::runtime_error("Error opening file");
 
@@ -110,158 +108,196 @@ void training::buildWeights() {
     std::vector<int> sequence = makeSequence(data, dictionary);
     int totalSequences = (sequence.size() + 127) / 128; // ceil division
 
-    // Declare context/output once
-    std::vector<std::vector<float>> context;
-    std::vector<std::vector<float>> output;
+    float learning_rate = 0.005f; // Set to 0.001 for finer training later
 
 
     // Training loop over sequences of length 128
-    for (int i = intput; i < totalSequences; i++) {
-        std::cout << "Training sequence #" << (i + 1) << "/" << totalSequences << "...\n";
+    auto trainSubset = [=](int threadnum, int step) mutable { // Threading
+        std::vector<std::vector<float>> gradWQ(embedding_dim, std::vector<float>(embedding_dim));
+        std::vector<std::vector<float>> gradWK(embedding_dim, std::vector<float>(embedding_dim));
+        std::vector<std::vector<float>> gradWV(embedding_dim, std::vector<float>(embedding_dim));
 
-        int start = i * 128;
-        int end = std::min(start + 128, (int)sequence.size());
-        int sequenceLength = end - start;
-        if (sequenceLength <= 0) continue;
 
-        // Get token embeddings for this sequence
-        std::vector<int> tokenSequence(sequence.begin() + start, sequence.begin() + end);
-        std::vector<std::vector<float>> vectorSequence;
-        vectorSequence.reserve(sequenceLength);
+        // Declare context/output once
+        std::vector<std::vector<float>> context;
+        std::vector<std::vector<float>> output;
 
-        for (int token : tokenSequence) {
-            if (token < 0 || token >= finalEmbeddings.size())
-                throw std::runtime_error("Invalid token index");
-            vectorSequence.push_back(finalEmbeddings[token]);
-        }
+        // Create local version of weights
+        auto localWeights = weights;
+        auto localEmbeddings = finalEmbeddings;
 
-        /* Forward pass */
-        std::vector<std::vector<float>> Q = matMul(vectorSequence, weights[0]); // seq_len x embed_dim
-        std::vector<std::vector<float>> K = matMul(vectorSequence, weights[1]); // seq_len x embed_dim
-        std::vector<std::vector<float>> V = matMul(vectorSequence, weights[2]); // seq_len x embed_dim
+        for (int i = intput + threadnum; i < totalSequences; i += step) {
+            std::cout << "Training sequence #" << (i + 1) << "/" << totalSequences << "...\n";
 
-        // Attention scores: seq_len x seq_len
-        std::vector<std::vector<float>> attentionScores = matMul(Q, transpose(K));
+            int start = i * 128;
+            int end = std::min(start + 128, (int)sequence.size());
+            int sequenceLength = end - start;
+            if (sequenceLength <= 0) continue;
 
-        // Scale by sqrt(d)
-        for (int m = 0; m < sequenceLength; ++m)
-            for (int n = 0; n < sequenceLength; ++n)
-                attentionScores[m][n] /= sqrt(embedding_dim);
+            // Get token embeddings for this sequence
+            std::vector<int> tokenSequence(sequence.begin() + start, sequence.begin() + end);
+            std::vector<std::vector<float>> vectorSequence;
+            vectorSequence.reserve(sequenceLength);
 
-        // Mask future tokens
-        for (int m = 0; m < sequenceLength; ++m)
-            for (int n = m + 1; n < sequenceLength; ++n)
-                attentionScores[m][n] = -1e9f;
 
-        // Softmax
-        std::vector<std::vector<float>> attentionWeights(sequenceLength, std::vector<float>(sequenceLength));
-        for (int m = 0; m < sequenceLength; ++m)
-            attentionWeights[m] = softmax(attentionScores[m]);
-
-        // Context vector
-        context = matMul(attentionWeights, V);
-
-        // Output logits
-        output = matMul(context, weights[3]);
-
-        // Apply softmax to output
-        std::vector<std::vector<float>> outputProb(sequenceLength, std::vector<float>(vocab_size));
-        for (int t = 0; t < sequenceLength; ++t)
-            outputProb[t] = softmax(output[t]);
-
-        // Preview predictions
-        for (int t = 0; t < sequenceLength; ++t) {
-            auto it = std::max_element(outputProb[t].begin(), outputProb[t].end());
-            int predictedToken = std::distance(outputProb[t].begin(), it);
-            int actualToken = tokenSequence[t]; // ground truth token
-            std::cout << "Position " << t
-                << " | Predicted: " << decode({ predictedToken }, dictionary)
-                << " | Actual: " << decode({ actualToken }, dictionary) << std::endl;
-        }
-
-        /* Backward pass */
-
-        // Targets & Output Error
-        std::vector<std::vector<float>> error(sequenceLength, std::vector<float>(vocab_size, 0.0f));
-        for (int m = 0; m < sequenceLength; ++m) {
-            for (int n = 0; n < vocab_size; ++n) {
-                error[m][n] = outputProb[m][n] - (n == tokenSequence[m] ? 1.0f : 0.0f);
-            }
-        }
-
-        std::vector<std::vector<float>> gradW3 = matMul(transpose(context), error);
-        training::clip(gradW3, 1.0f);
-
-        // Update WO weights
-        for (int m = 0; m < embedding_dim; ++m)
-            for (int n = 0; n < vocab_size; ++n)
-                weights[3][m][n] -= learning_rate * gradW3[m][n];
-
-        std::vector<std::vector<float>> dContext = matMul(error, transpose(weights[3]));
-
-        // Gradients for V
-        gradWV = matMul(transpose(vectorSequence), dContext);
-        training::clip(gradWV, 1.0f);
-
-        // Gradient for attention
-        std::vector<std::vector<float>> dAttention(sequenceLength, std::vector<float>(sequenceLength, 0.0f));
-        for (int m = 0; m < sequenceLength; ++m) {
-            float sum = 0.0f;
-            for (int n = 0; n < sequenceLength; ++n)
-                sum += attentionWeights[m][n] * dContext[m][n];
-            for (int n = 0; n < sequenceLength; ++n)
-                dAttention[m][n] = attentionWeights[m][n] * (dContext[m][n] - sum);
-        }
-
-        std::vector<std::vector<float>> dQ = matMul(dAttention, K);
-        std::vector<std::vector<float>> dK = matMul(transpose(dAttention), Q);
-
-        gradWQ = matMul(transpose(vectorSequence), dQ);
-        gradWK = matMul(transpose(vectorSequence), dK);
-        training::clip(gradWQ, 1.0f);
-        training::clip(gradWK, 1.0f);
-        training::clip(gradWV, 1.0f);
-
-        // Update Q/K/V weights
-        for (int m = 0; m < embedding_dim; ++m)
-            for (int n = 0; n < embedding_dim; ++n) {
-                weights[0][m][n] -= learning_rate * gradWQ[m][n];
-                weights[1][m][n] -= learning_rate * gradWK[m][n];
-                weights[2][m][n] -= learning_rate * gradWV[m][n];
+            for (int token : tokenSequence) {
+                if (token < 0 || token >= localEmbeddings.size())
+                     throw std::runtime_error("Invalid token index");
+                vectorSequence.push_back(localEmbeddings[token]);
             }
 
-        /* Calculate gradient for embeddings */
-        std::vector<std::vector<float>> gradEmbeddings(sequenceLength, std::vector<float>(embedding_dim, 0.0f));
+            /* Forward pass */
+            std::vector<std::vector<float>> Q = matMul(vectorSequence, localWeights[0]); // seq_len x embed_dim
+            std::vector<std::vector<float>> K = matMul(vectorSequence, localWeights[1]); // seq_len x embed_dim
+            std::vector<std::vector<float>> V = matMul(vectorSequence, localWeights[2]); // seq_len x embed_dim
 
-        std::vector<std::vector<float>> temp;
-        temp = matMul(dQ, transpose(weights[0]));
-        for (int t = 0; t < sequenceLength; ++t)
-            for (int d = 0; d < embedding_dim; ++d)
-                gradEmbeddings[t][d] += temp[t][d];
+            // Attention scores: seq_len x seq_len
+            std::vector<std::vector<float>> attentionScores = matMul(Q, transpose(K));
 
-        temp = matMul(dK, transpose(weights[1]));
-        for (int t = 0; t < sequenceLength; ++t)
-            for (int d = 0; d < embedding_dim; ++d)
-                gradEmbeddings[t][d] += temp[t][d];
+            // Scale by sqrt(d)
+            for (int m = 0; m < sequenceLength; ++m)
+                for (int n = 0; n < sequenceLength; ++n)
+                    attentionScores[m][n] /= sqrt(embedding_dim);
 
-        temp = dContext;
-        for (int t = 0; t < sequenceLength; ++t)
-            for (int d = 0; d < embedding_dim; ++d)
-                gradEmbeddings[t][d] += temp[t][d];
+            // Mask future tokens
+            for (int m = 0; m < sequenceLength; ++m)
+                for (int n = m + 1; n < sequenceLength; ++n)
+                    attentionScores[m][n] = -1e9f;
 
-        training::clip(gradEmbeddings, 1.0f);
+            // Softmax
+            std::vector<std::vector<float>> attentionWeights(sequenceLength, std::vector<float>(sequenceLength));
+            for (int m = 0; m < sequenceLength; ++m)
+                attentionWeights[m] = softmax(attentionScores[m]);
 
-        for (int t = 0; t < sequenceLength; ++t)
-            for (int d = 0; d < embedding_dim; ++d)
-                finalEmbeddings[tokenSequence[t]][d] -= learning_rate * gradEmbeddings[t][d];
+            // Context vector
+            context = matMul(attentionWeights, V);
 
-        if (i % 3 == 0) {
-            std::cout << "Writing to file. DO NOT QUIT\r";
-            write3DVector("../weights.txt", weights);
-            write2DVector("../embeddings.txt", finalEmbeddings);
+            // Output logits
+            output = matMul(context, localWeights[3]);
+
+            // Apply softmax to output
+            std::vector<std::vector<float>> outputProb(sequenceLength, std::vector<float>(vocab_size));
+            for (int t = 0; t < sequenceLength; ++t)
+                outputProb[t] = softmax(output[t]);
+
+            // Preview predictions
+            for (int t = 0; t < sequenceLength; ++t) {
+                auto it = std::max_element(outputProb[t].begin(), outputProb[t].end());
+                int predictedToken = std::distance(outputProb[t].begin(), it);
+                int actualToken = tokenSequence[t]; // ground truth token
+                std::cout << "Position " << t
+                    << " | Predicted: " << decode({ predictedToken }, dictionary)
+                    << " | Actual: " << decode({ actualToken }, dictionary) << std::endl;
+            }
+
+            /* Backward pass */
+
+            // Targets & Output Error
+            std::vector<std::vector<float>> error(sequenceLength, std::vector<float>(vocab_size, 0.0f));
+            for (int m = 0; m < sequenceLength; ++m) {
+                for (int n = 0; n < vocab_size; ++n) {
+                    error[m][n] = outputProb[m][n] - (n == tokenSequence[m] ? 1.0f : 0.0f);
+                }
+            }
+
+            std::vector<std::vector<float>> gradW3 = matMul(transpose(context), error);
+            training::clip(gradW3, 1.0f);
+
+            // Update WO weights
+            for (int m = 0; m < embedding_dim; ++m)
+                for (int n = 0; n < vocab_size; ++n)
+                    localWeights[3][m][n] -= learning_rate * gradW3[m][n];
+
+            std::vector<std::vector<float>> dContext = matMul(error, transpose(localWeights[3]));
+
+            // Gradients for V
+            gradWV = matMul(transpose(vectorSequence), dContext);
+            training::clip(gradWV, 1.0f);
+
+            // Gradient for attention
+            std::vector<std::vector<float>> dAttention(sequenceLength, std::vector<float>(sequenceLength, 0.0f));
+            for (int m = 0; m < sequenceLength; ++m) {
+                float sum = 0.0f;
+                for (int n = 0; n < sequenceLength; ++n)
+                    sum += attentionWeights[m][n] * dContext[m][n];
+                for (int n = 0; n < sequenceLength; ++n)
+                    dAttention[m][n] = attentionWeights[m][n] * (dContext[m][n] - sum);
+            }
+
+            std::vector<std::vector<float>> dQ = matMul(dAttention, K);
+            std::vector<std::vector<float>> dK = matMul(transpose(dAttention), Q);
+
+            gradWQ = matMul(transpose(vectorSequence), dQ);
+            gradWK = matMul(transpose(vectorSequence), dK);
+            training::clip(gradWQ, 1.0f);
+            training::clip(gradWK, 1.0f);
+            training::clip(gradWV, 1.0f);
+
+            // Update Q/K/V weights
+            for (int m = 0; m < embedding_dim; ++m)
+                for (int n = 0; n < embedding_dim; ++n) {
+                    localWeights[0][m][n] -= learning_rate * gradWQ[m][n];
+                    localWeights[1][m][n] -= learning_rate * gradWK[m][n];
+                    localWeights[2][m][n] -= learning_rate * gradWV[m][n];
+                }
+
+            /* Calculate gradient for embeddings */
+            std::vector<std::vector<float>> gradEmbeddings(sequenceLength, std::vector<float>(embedding_dim, 0.0f));
+
+            std::vector<std::vector<float>> temp;
+            temp = matMul(dQ, transpose(localWeights[0]));
+            for (int t = 0; t < sequenceLength; ++t)
+                for (int d = 0; d < embedding_dim; ++d)
+                    gradEmbeddings[t][d] += temp[t][d];
+
+            temp = matMul(dK, transpose(localWeights[1]));
+            for (int t = 0; t < sequenceLength; ++t)
+                for (int d = 0; d < embedding_dim; ++d)
+                    gradEmbeddings[t][d] += temp[t][d];
+
+            temp = dContext;
+            for (int t = 0; t < sequenceLength; ++t)
+                for (int d = 0; d < embedding_dim; ++d)
+                    gradEmbeddings[t][d] += temp[t][d];
+
+            training::clip(gradEmbeddings, 1.0f);
+
+            for (int t = 0; t < sequenceLength; ++t)
+                for (int d = 0; d < embedding_dim; ++d)
+                    localEmbeddings[tokenSequence[t]][d] -= learning_rate * gradEmbeddings[t][d];
+
+            // Merge updates
+            {
+                std::lock_guard<std::mutex> lock(updateMutex);
+                weights = localWeights;
+                finalEmbeddings = localEmbeddings;
+            }
+
+
+
+            if (i % 3 == 0) {
+                std::cout << "Writing to file. DO NOT QUIT\r";
+                write3DVector("../weights.txt", weights);
+                write2DVector("../embeddings.txt", finalEmbeddings);
+            }
         }
-    }
+    };
+
+
+    std::thread t1(trainSubset, 0, 3); // thread 0: sequences 0, 3, 6, ...
+    std::thread t2(trainSubset, 1, 3); // thread 1: sequences 1, 4, 7, ...
+    std::thread t3(trainSubset, 2, 3); // thread 2: sequences 2, 5, 8, ...
+
+    t1.join();
+    t2.join();
+    t3.join();
+
+
+    std::cout << "\nTraining complete!\n";
+
+
 }
+
 
 
 // Generate embeddings aligned with dictionary (Creates dictionary of words in training data for later)
