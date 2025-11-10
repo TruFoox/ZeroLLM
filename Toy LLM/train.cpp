@@ -19,12 +19,12 @@ using json = nlohmann::json;
 /* There are a lot of comments because this is a personal learning project */
 void training::buildWeights() {
     int embedding_dim = 768;
-    float learning_rate = 0.001f;
+    float learning_rate = 0.01f; // Set to 0.001 for finer training later
 
     char input;
     int intput; // Stores user inputs
 
-	std::cout << "Build new model weights? (y/n): ";
+    std::cout << "Build new model weights? (y/n): ";
     std::cin >> input;
 
     // Load dictionary
@@ -32,7 +32,7 @@ void training::buildWeights() {
 
     if (dictionary.empty())
         throw std::runtime_error("Dictionary is empty — build it first from training data!");
-   
+
     int vocab_size = static_cast<int>(dictionary.size());
 
 
@@ -128,6 +128,7 @@ void training::buildWeights() {
         std::vector<int> tokenSequence(sequence.begin() + start, sequence.begin() + end);
         std::vector<std::vector<float>> vectorSequence;
         vectorSequence.reserve(sequenceLength);
+
         for (int token : tokenSequence) {
             if (token < 0 || token >= finalEmbeddings.size())
                 throw std::runtime_error("Invalid token index");
@@ -150,7 +151,7 @@ void training::buildWeights() {
         // Mask future tokens
         for (int m = 0; m < sequenceLength; ++m)
             for (int n = m + 1; n < sequenceLength; ++n)
-                attentionScores[m][n] = -1e9;
+                attentionScores[m][n] = -1e9f;
 
         // Softmax
         std::vector<std::vector<float>> attentionWeights(sequenceLength, std::vector<float>(sequenceLength));
@@ -163,17 +164,30 @@ void training::buildWeights() {
         // Output logits
         output = matMul(context, weights[3]);
 
+        // Apply softmax to output
+        std::vector<std::vector<float>> outputProb(sequenceLength, std::vector<float>(vocab_size));
+        for (int t = 0; t < sequenceLength; ++t)
+            outputProb[t] = softmax(output[t]);
+
+        // Preview predictions
+        for (int t = 0; t < sequenceLength; ++t) {
+            auto it = std::max_element(outputProb[t].begin(), outputProb[t].end());
+            int predictedToken = std::distance(outputProb[t].begin(), it);
+            int actualToken = tokenSequence[t]; // ground truth token
+            std::cout << "Position " << t
+                << " | Predicted: " << decode({ predictedToken }, dictionary)
+                << " | Actual: " << decode({ actualToken }, dictionary) << std::endl;
+        }
+
         /* Backward pass */
 
         // Targets & Output Error
-        std::vector<std::vector<float>> targets(sequenceLength, std::vector<float>(vocab_size, 0.0f));
-        for (int m = 0; m < sequenceLength; ++m)
-            targets[m][tokenSequence[m]] = 1.0f;
-
         std::vector<std::vector<float>> error(sequenceLength, std::vector<float>(vocab_size, 0.0f));
-        for (int m = 0; m < sequenceLength; ++m)
-            for (int n = 0; n < vocab_size; ++n)
-                error[m][n] = output[m][n] - targets[m][n];
+        for (int m = 0; m < sequenceLength; ++m) {
+            for (int n = 0; n < vocab_size; ++n) {
+                error[m][n] = outputProb[m][n] - (n == tokenSequence[m] ? 1.0f : 0.0f);
+            }
+        }
 
         std::vector<std::vector<float>> gradW3 = matMul(transpose(context), error);
         training::clip(gradW3, 1.0f);
@@ -183,82 +197,69 @@ void training::buildWeights() {
             for (int n = 0; n < vocab_size; ++n)
                 weights[3][m][n] -= learning_rate * gradW3[m][n];
 
-        std::vector<std::vector<float>> dContext = matMul(error, transpose(weights[3])); // sequenceLength x embedding_dim
+        std::vector<std::vector<float>> dContext = matMul(error, transpose(weights[3]));
 
-        gradWV = matMul(transpose(attentionWeights), dContext); // embedding_dim x embedding_dim
+        // Gradients for V
+        gradWV = matMul(transpose(vectorSequence), dContext);
         training::clip(gradWV, 1.0f);
 
+        // Gradient for attention
         std::vector<std::vector<float>> dAttention(sequenceLength, std::vector<float>(sequenceLength, 0.0f));
-        for (int i = 0; i < sequenceLength; ++i) {
+        for (int m = 0; m < sequenceLength; ++m) {
             float sum = 0.0f;
-            for (int j = 0; j < sequenceLength; ++j)
-                sum += attentionWeights[i][j] * dContext[i][j];
-
-            for (int j = 0; j < sequenceLength; ++j)
-                dAttention[i][j] = attentionWeights[i][j] * (dContext[i][j] - sum);
+            for (int n = 0; n < sequenceLength; ++n)
+                sum += attentionWeights[m][n] * dContext[m][n];
+            for (int n = 0; n < sequenceLength; ++n)
+                dAttention[m][n] = attentionWeights[m][n] * (dContext[m][n] - sum);
         }
 
-        // Gradients
-        std::vector<std::vector<float>> dQ = matMul(dAttention, K); // sequenceLength x embedding_dim
-        std::vector<std::vector<float>> dK = matMul(transpose(dAttention), Q); // sequenceLength x embedding_dim
+        std::vector<std::vector<float>> dQ = matMul(dAttention, K);
+        std::vector<std::vector<float>> dK = matMul(transpose(dAttention), Q);
 
-        gradWQ = matMul(transpose(vectorSequence), dQ); // embedding_dim x embedding_dim
-        gradWK = matMul(transpose(vectorSequence), dK); // embedding_dim x embedding_dim
-        gradWV = matMul(transpose(vectorSequence), dContext); // embedding_dim x embedding_dim (fixed)
-
-        // Clip gradients
+        gradWQ = matMul(transpose(vectorSequence), dQ);
+        gradWK = matMul(transpose(vectorSequence), dK);
         training::clip(gradWQ, 1.0f);
         training::clip(gradWK, 1.0f);
         training::clip(gradWV, 1.0f);
 
         // Update Q/K/V weights
-        int embed = embedding_dim;
-        for (int m = 0; m < embed; ++m) {
-            for (int n = 0; n < embed; ++n) {
+        for (int m = 0; m < embedding_dim; ++m)
+            for (int n = 0; n < embedding_dim; ++n) {
                 weights[0][m][n] -= learning_rate * gradWQ[m][n];
                 weights[1][m][n] -= learning_rate * gradWK[m][n];
                 weights[2][m][n] -= learning_rate * gradWV[m][n];
             }
-        }
 
         /* Calculate gradient for embeddings */
         std::vector<std::vector<float>> gradEmbeddings(sequenceLength, std::vector<float>(embedding_dim, 0.0f));
 
-        // Stores contribution from Q/K/V
         std::vector<std::vector<float>> temp;
-
-        // Q contribution
         temp = matMul(dQ, transpose(weights[0]));
         for (int t = 0; t < sequenceLength; ++t)
             for (int d = 0; d < embedding_dim; ++d)
                 gradEmbeddings[t][d] += temp[t][d];
 
-        // K contribution
         temp = matMul(dK, transpose(weights[1]));
         for (int t = 0; t < sequenceLength; ++t)
             for (int d = 0; d < embedding_dim; ++d)
                 gradEmbeddings[t][d] += temp[t][d];
 
-        // V contribution
         temp = dContext;
         for (int t = 0; t < sequenceLength; ++t)
             for (int d = 0; d < embedding_dim; ++d)
                 gradEmbeddings[t][d] += temp[t][d];
 
-        // Clip gradient
         training::clip(gradEmbeddings, 1.0f);
 
-        // Update embeddings (subtract with learning rate)
         for (int t = 0; t < sequenceLength; ++t)
             for (int d = 0; d < embedding_dim; ++d)
                 finalEmbeddings[tokenSequence[t]][d] -= learning_rate * gradEmbeddings[t][d];
 
-        // Save updated weights
-        if (i % 3 == 0)
+        if (i % 3 == 0) {
             std::cout << "Writing to file. DO NOT QUIT\r";
             write3DVector("../weights.txt", weights);
             write2DVector("../embeddings.txt", finalEmbeddings);
-
+        }
     }
 }
 
@@ -408,10 +409,9 @@ std::vector<int> training::makeSequence(const std::string& data, const std::unor
                 currentWord.clear();
             }
 
-            if (!std::isspace(currentChar)) {
-                int id = encode(std::string(1, currentChar), dictionary);
-                tokenizedString.push_back(id >= 0 ? id : unkId); // replace -1 with <UNK>
-            }
+
+            int id = encode(std::string(1, currentChar), dictionary);
+            tokenizedString.push_back(id >= 0 ? id : unkId); // replace -1 with <UNK>
         }
         else {
             currentWord += currentChar;
@@ -539,7 +539,7 @@ std::string training::decode(const std::vector<int>& tokens, const std::unordere
 	std::vector<std::string> result; // vector to hold final string
 
     for (const int token : tokens) {
-        for (const auto& pair : vocab) { // pair.first = key, pair.second = value
+        for (const auto& pair : dictionary) { // pair.first = key, pair.second = value
             if (pair.second == token) {
 				result.push_back(pair.first);
             }
