@@ -112,7 +112,7 @@ void training::buildWeights() {
 
 
     // Training loop over sequences of length 128
-    auto trainSubset = [=](int threadnum, int step) mutable { // Threading
+    auto trainSubset = [=](int threadnum, int numThreads) mutable { // Threading
         std::vector<std::vector<float>> gradWQ(embedding_dim, std::vector<float>(embedding_dim));
         std::vector<std::vector<float>> gradWK(embedding_dim, std::vector<float>(embedding_dim));
         std::vector<std::vector<float>> gradWV(embedding_dim, std::vector<float>(embedding_dim));
@@ -126,7 +126,7 @@ void training::buildWeights() {
         auto localWeights = weights;
         auto localEmbeddings = finalEmbeddings;
 
-        for (int i = intput + threadnum; i < totalSequences; i += step) {
+        for (int i = intput + threadnum; i < totalSequences; i += numThreads) {
             std::cout << "Training sequence #" << (i + 1) << "/" << totalSequences << "...\n";
 
             int start = i * 128;
@@ -181,14 +181,18 @@ void training::buildWeights() {
                 outputProb[t] = softmax(output[t]);
 
             // Preview predictions
-            for (int t = 0; t < sequenceLength; ++t) {
-                auto it = std::max_element(outputProb[t].begin(), outputProb[t].end());
-                int predictedToken = std::distance(outputProb[t].begin(), it);
-                int actualToken = tokenSequence[t]; // ground truth token
-                std::cout << "Position " << t
-                    << " | Predicted: " << decode({ predictedToken }, dictionary)
-                    << " | Actual: " << decode({ actualToken }, dictionary) << std::endl;
+            {
+                std::lock_guard<std::mutex> lock(updateMutex); // protects console output
+                for (int t = 0; t < sequenceLength; ++t) {
+                    auto it = std::max_element(outputProb[t].begin(), outputProb[t].end());
+                    int predictedToken = std::distance(outputProb[t].begin(), it);
+                    int actualToken = tokenSequence[t]; // ground truth token
+                    std::cout << "Position " << t
+                        << " | Predicted: " << decode({ predictedToken }, dictionary)
+                        << " | Actual: " << decode({ actualToken }, dictionary) << std::endl;
+                }
             }
+
 
             /* Backward pass */
 
@@ -271,7 +275,8 @@ void training::buildWeights() {
             for (int m = 0; m < weights.size(); ++m)
                 for (int i = 0; i < weights[m].size(); ++i)
                     for (int j = 0; j < weights[m][i].size(); ++j)
-                        weights[m][i][j] += localWeights[m][i][j] - weights[m][i][j];
+                        weights[m][i][j] += (localWeights[m][i][j] - weights[m][i][j]) / numThreads;
+
 
 
 
