@@ -20,7 +20,8 @@ std::mutex updateMutex; // protects shared weights/embeddings
 
 /* There are a lot of comments because this is a personal learning project */
 void training::buildWeights() {
-    int embedding_dim = 768;
+    int embedding_dim = 512;
+    float learning_rate = 0.001f; // Set to 0.001 for finer training later
 
 
     char input;
@@ -108,11 +109,10 @@ void training::buildWeights() {
     std::vector<int> sequence = makeSequence(data, dictionary);
     int totalSequences = (sequence.size() + 127) / 128; // ceil division
 
-    float learning_rate = 0.005f; // Set to 0.001 for finer training later
 
 
     // Training loop over sequences of length 128
-    auto trainSubset = [=](int threadnum, int numThreads) mutable { // Threading
+    auto trainSubset = [&](int threadNum, int numThreads) mutable { // Threading
         std::vector<std::vector<float>> gradWQ(embedding_dim, std::vector<float>(embedding_dim));
         std::vector<std::vector<float>> gradWK(embedding_dim, std::vector<float>(embedding_dim));
         std::vector<std::vector<float>> gradWV(embedding_dim, std::vector<float>(embedding_dim));
@@ -126,7 +126,7 @@ void training::buildWeights() {
         auto localWeights = weights;
         auto localEmbeddings = finalEmbeddings;
 
-        for (int i = intput + threadnum; i < totalSequences; i += numThreads) {
+        for (int i = intput + threadNum; i < totalSequences; i += numThreads) {
             std::cout << "Training sequence #" << (i + 1) << "/" << totalSequences << "...\n";
 
             int start = i * 128;
@@ -186,8 +186,8 @@ void training::buildWeights() {
                 for (int t = 0; t < sequenceLength; ++t) {
                     auto it = std::max_element(outputProb[t].begin(), outputProb[t].end());
                     int predictedToken = std::distance(outputProb[t].begin(), it);
-                    int actualToken = tokenSequence[t]; // ground truth token
-                    std::cout << "Position " << t
+                    int actualToken = tokenSequence[t];
+                    std::cout << "Thread " << threadNum << ": Position " << t
                         << " | Predicted: " << decode({ predictedToken }, dictionary)
                         << " | Actual: " << decode({ actualToken }, dictionary) << std::endl;
                 }
@@ -266,17 +266,37 @@ void training::buildWeights() {
 
             training::clip(gradEmbeddings, 1.0f);
 
-            for (int t = 0; t < sequenceLength; ++t)
+
+            std::vector<std::vector<float>> tokenGradients(localEmbeddings.size(), std::vector<float>(embedding_dim, 0.0f));
+
+            // Combine gradients for each token
+            for (int t = 0; t < sequenceLength; ++t) {
+                int token = tokenSequence[t];
                 for (int d = 0; d < embedding_dim; ++d)
-                    localEmbeddings[tokenSequence[t]][d] -= learning_rate * gradEmbeddings[t][d];
+                    tokenGradients[token][d] += gradEmbeddings[t][d];
+            }
 
-            // Merge updates
-            std::lock_guard<std::mutex> lock(updateMutex);
-            for (int m = 0; m < weights.size(); ++m)
-                for (int i = 0; i < weights[m].size(); ++i)
-                    for (int j = 0; j < weights[m][i].size(); ++j)
-                        weights[m][i][j] += (localWeights[m][i][j] - weights[m][i][j]) / numThreads;
+            // Apply learning rate update
+            for (int token = 0; token < localEmbeddings.size(); ++token) {
+                for (int d = 0; d < embedding_dim; ++d)
+                    localEmbeddings[token][d] -= learning_rate * tokenGradients[token][d];
+            }
 
+
+            {
+                std::lock_guard<std::mutex> lock(updateMutex);
+
+				// Merge weights (average)
+                for (int m = 0; m < weights.size(); ++m)
+                    for (int i = 0; i < weights[m].size(); ++i)
+                        for (int j = 0; j < weights[m][i].size(); ++j)
+                            weights[m][i][j] += (localWeights[m][i][j] - weights[m][i][j]);
+
+                // Merge embeddings (average)
+                for (int t = 0; t < localEmbeddings.size(); ++t)
+                    for (int d = 0; d < embedding_dim; ++d)
+                        finalEmbeddings[t][d] += (localEmbeddings[t][d] - finalEmbeddings[t][d]) / numThreads;
+            }
 
 
 
@@ -290,14 +310,13 @@ void training::buildWeights() {
     };
 
 
-    std::thread t1(trainSubset, 0, 3); // thread 0: sequences 0, 3, 6, ...
-    std::thread t2(trainSubset, 1, 3); // thread 1: sequences 1, 4, 7, ...
-    std::thread t3(trainSubset, 2, 3); // thread 2: sequences 2, 5, 8, ...
+    std::thread t1(trainSubset, 0, 3); // thread 0: sequences 0, 4, 8, ...
+    std::thread t2(trainSubset, 1, 3); // thread 1: sequences 1, 5, 9, ...
+    std::thread t3(trainSubset, 2, 3); // thread 2: sequences 2, 6, 10, ...
 
     t1.join();
     t2.join();
     t3.join();
-
 
     std::cout << "\nTraining complete!\n";
 
