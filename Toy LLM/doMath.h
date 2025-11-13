@@ -18,6 +18,31 @@ std::vector<std::vector<float>> matMul(const std::vector<std::vector<float>>& A,
     return C;
 }
 
+std::vector<std::vector<float>> matAdd(const std::vector<std::vector<float>>& A, const std::vector<std::vector<float>>& B) {
+    int m = A.size();
+    int n = A[0].size();
+    std::vector<std::vector<float>> C(m, std::vector<float>(n, 0.0f));
+
+    for (int i = 0; i < m; ++i)
+        for (int j = 0; j < n; ++j)
+            C[i][j] = A[i][j] + B[i][j];
+
+    return C;
+}
+
+
+float relu(float x) {
+    return (x > 0) ? x : 0;
+}
+
+float dotProduct(const std::vector<float>& a, const std::vector<float>& b) {
+    float result = 0.0f;
+    for (size_t i = 0; i < a.size(); ++i) {
+        result = a[i] * b[i];
+    }
+
+	return result;
+}
 std::vector<std::vector<float>> transpose(const std::vector<std::vector<float>>& mat) {
     int rows = mat.size();
     int cols = mat[0].size();

@@ -21,7 +21,7 @@ std::mutex updateMutex; // protects shared weights/embeddings
 /* There are a lot of comments because this is a personal learning project */
 void training::buildWeights() {
     int embedding_dim = 300;
-    float learning_rate = 0.005f; // Set to 0.001 for finer training later
+    float learning_rate = 0.002f; // Set to 0.001 for finer training later
 
 
     char input;
@@ -175,6 +175,11 @@ void training::buildWeights() {
             // Output logits
             output = matMul(context, localWeights[3]);
 
+            // Residual connection
+            std::vector<std::vector<float>> hidden = matAdd(context, vectorSequence);
+			output = matMul(hidden, localWeights[3]); // project onto vocab because vectorsequence isnt same dim
+
+
             // Apply softmax to output
             std::vector<std::vector<float>> outputProb(sequenceLength, std::vector<float>(vocab_size));
             for (int t = 0; t < sequenceLength; ++t)
@@ -314,13 +319,13 @@ void training::buildWeights() {
     std::thread t2(trainSubset, 1, 4); // thread 1: sequences 1, 5, 9, ...
     std::thread t3(trainSubset, 2, 4); // thread 2: sequences 2, 6, 10, ...
     std::thread t4(trainSubset, 3, 4);
-    //std::thread t5(trainSubset, 4, 5); 
+    std::thread t5(trainSubset, 4, 5); 
 
     t1.join();
     t2.join();
     t3.join();
     t4.join();
-    //t5.join();
+    t5.join();
 
     std::cout << "\nTraining complete!\n";
 
