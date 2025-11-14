@@ -21,7 +21,7 @@ std::mutex updateMutex; // protects shared weights/embeddings
 /* There are a lot of comments because this is a personal learning project */
 void training::buildWeights() {
     int embedding_dim = 300;
-    float learning_rate = 0.002f; // Set to 0.001 for finer training later
+    float learning_rate = 0.001f; // Set to 0.001 for finer training later
 
 
     char input;
