@@ -185,19 +185,6 @@ void training::buildWeights() {
             for (int t = 0; t < sequenceLength; ++t)
                 outputProb[t] = softmax(output[t]);
 
-            // Preview predictions
-            {
-                std::lock_guard<std::mutex> lock(updateMutex); // protects console output
-                for (int t = 0; t < sequenceLength; ++t) {
-                    auto it = std::max_element(outputProb[t].begin(), outputProb[t].end());
-                    int predictedToken = std::distance(outputProb[t].begin(), it);
-                    int actualToken = tokenSequence[t];
-                    std::cout << "Thread " << threadNum << ": Position " << t
-                        << " | Predicted: " << decode({ predictedToken }, dictionary)
-                        << " | Actual: " << decode({ actualToken }, dictionary) << std::endl;
-                }
-            }
-
 
             /* Backward pass */
 
@@ -206,6 +193,25 @@ void training::buildWeights() {
             for (int m = 0; m < sequenceLength; ++m) {
                 for (int n = 0; n < vocab_size; ++n) {
                     error[m][n] = outputProb[m][n] - (n == tokenSequence[m] ? 1.0f : 0.0f);
+                }
+            }
+
+            float combinedLoss = 0.0f;
+            for (int t = 0; t < sequenceLength; ++t)
+                combinedLoss += -log(outputProb[t][tokenSequence[t]] + 1e-9f); // avoid log(0)
+            combinedLoss /= sequenceLength;
+
+
+            // Preview predictions
+            {
+                std::lock_guard<std::mutex> lock(updateMutex); // protects console output
+                for (int t = 0; t < sequenceLength; ++t) {
+                    auto it = std::max_element(outputProb[t].begin(), outputProb[t].end());
+                    int predictedToken = std::distance(outputProb[t].begin(), it);
+                    int actualToken = tokenSequence[t];
+                    std::cout << "Thread " << threadNum << " | Loss " << combinedLoss << " | Position " << t
+                        << " | Predicted: " << decode({ predictedToken }, dictionary)
+                        << " | Actual: " << decode({ actualToken }, dictionary) << std::endl;
                 }
             }
 
@@ -315,17 +321,26 @@ void training::buildWeights() {
     };
 
 
-    std::thread t1(trainSubset, 0, 5); // thread 0: sequences 0, 4, 8, ...
-    std::thread t2(trainSubset, 1, 5); // thread 1: sequences 1, 5, 9, ...
-    std::thread t3(trainSubset, 2, 5); // thread 2: sequences 2, 6, 10, ...
-    std::thread t4(trainSubset, 3, 5);
-    std::thread t5(trainSubset, 4, 5); 
+	int threads = 5; // Number of threads to use
+
+    std::thread t1(trainSubset, 0, threads); // thread 0: sequences 0, 4, 8, ...
+    std::thread t2(trainSubset, 1, threads); // thread 1: sequences 1, 5, 9, ...
+    std::thread t3(trainSubset, 2, threads); // thread 2: sequences 2, 6, 10, ...
+    std::thread t4(trainSubset, 3, threads);
+    std::thread t5(trainSubset, 4, threads);
+
+
+    //std::thread t6(trainSubset, 5, threads);
+    //std::thread t7(trainSubset, 6, threads);
 
     t1.join();
     t2.join();
     t3.join();
     t4.join();
     t5.join();
+
+    //t6.join();
+   // t7.join();
 
     std::cout << "\nTraining complete!\n";
 
