@@ -306,7 +306,7 @@ void training::buildWeights() {
 
 
 
-            if (i % 40 == 0 && threadNum == 0) { // 40 / 4 threads = every 10 iterations
+            if (i % 50 == 0 && threadNum == 0) { // 40 / 4 threads = every 10 iterations
                 std::cout << "Writing to file. DO NOT QUIT\r";
                 write3DVector("../weights.txt", weights);
                 write2DVector("../embeddings.txt", finalEmbeddings);
