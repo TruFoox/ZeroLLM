@@ -644,21 +644,31 @@ void training::define(const std::string& text, std::unordered_map<std::string, i
 
 
 
-std::string training::decode(const std::vector<int>& tokens, const std::unordered_map<std::string, int>& dictionary) { // Decode tokens to text
-
-	std::vector<std::string> result; // vector to hold final string
-
-    for (const int token : tokens) {
-        for (const auto& pair : dictionary) { // pair.first = key, pair.second = value
-            if (pair.second == token) {
-				result.push_back(pair.first);
-            }
+std::string training::decode(const std::vector<int>& tokens, const std::unordered_map<std::string, int>& dictionary) {
+    // Build reverse map once
+    static std::unordered_map<int, std::string> reverseDict;
+    static bool initialized = false;
+    if (!initialized) {
+        for (const auto& pair : dictionary) {
+            reverseDict[pair.second] = pair.first;
         }
-	}
-    return std::accumulate(result.begin(), result.end(), std::string(),[](const std::string& a, const std::string& b) {
-            return a + (a.length() > 0 ? " " : "") + b;
-		});
+        initialized = true;
+    }
+
+    std::string result;
+    result.reserve(tokens.size() * 8); // rough estimate to avoid reallocations
+
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        auto it = reverseDict.find(tokens[i]);
+        if (it != reverseDict.end()) {
+            if (!result.empty()) result += ' ';
+            result += it->second;
+        }
+    }
+
+    return result;
 }
+
 
 
 int training::encode(const std::string& word, const std::unordered_map<std::string, int>& dictionary) {
