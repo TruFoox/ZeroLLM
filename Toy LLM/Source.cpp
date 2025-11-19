@@ -82,20 +82,19 @@ int main() {
             if (embeddings.empty() || weights.empty())
                 throw std::runtime_error("No existing embeddings or weights found.");
 
-            // Allocate output projection if missing
             if (weights.size() < 4) {
                 weights.resize(4);
                 weights[3] = std::vector<std::vector<float>>(embedding_dim, std::vector<float>(vocab_size, 0.0f));
             }
 
-            // Encode input text as token IDs
             std::vector<int> tokenSequence;
+            int unkToken = dictionary["<unk>"];
             for (char c : input) {
                 std::string s(1, c);
                 if (dictionary.count(s))
                     tokenSequence.push_back(dictionary[s]);
                 else
-                    tokenSequence.push_back(dictionary["<unk>"]);
+                    tokenSequence.push_back(unkToken); // temporary placeholder
             }
 
             std::vector<std::string> invDict(vocab_size);
@@ -134,6 +133,13 @@ int main() {
 
                 std::vector<float> probs = softmax(logits.back());
 
+                // Force <unk> to zero probability
+                probs[unkToken] = 0.0f;
+
+                float sumProb = 0.0f;
+                for (float p : probs) sumProb += p;
+                for (float& p : probs) p /= sumProb;
+
                 int nextToken = 0;
                 float best = probs[0];
                 for (int i = 1; i < vocab_size; i++)
@@ -149,6 +155,7 @@ int main() {
 
             std::cout << "\n";
         }
+
 
 	}
 
