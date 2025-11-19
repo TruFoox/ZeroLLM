@@ -45,100 +45,111 @@ int main() {
 
 		}
         else if (choice == 3) {
+
             training t;
 
             int embedding_dim = 256;
-            string in;
 
-            cout << "Input a message to the model:" << endl;
-            std::getline(cin, in);
+            // clean stdin
+            cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
-            int numPredict;
-            cout << "How many tokens (characters, including spaces) should the model predict? ";
-            cin >> numPredict;
-            cin.ignore();
+            // get prompt
+            std::string input;
+            std::cout << "Input a message to the model:\n";
+            std::getline(std::cin, input);
+
+            // get number of tokens to generate
+            std::cout << "How many tokens (characters, including spaces) should the model predict?\n";
+            int tokenCount;
+            while (!(std::cin >> tokenCount)) {
+                std::cin.clear();
+                std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                std::cout << "Enter a valid number:\n";
+            }
+            cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
             // Load dictionary
             std::unordered_map<std::string, int> dictionary = t.read_dict();
             if (dictionary.empty())
                 throw std::runtime_error("Dictionary is empty — build it first from training data!");
 
-            int vocab_size = static_cast<int>(dictionary.size());
+            int vocab_size = (int)dictionary.size();
 
-            // Load embeddings and weights
+            // Load embeddings + weights
             std::vector<std::vector<float>> embeddings = read2DVector("../embeddings.txt", embedding_dim);
             std::vector<std::vector<std::vector<float>>> weights = read3DVector("../weights.txt", embedding_dim);
 
             if (embeddings.empty() || weights.empty())
                 throw std::runtime_error("No existing embeddings or weights found.");
 
+            // Allocate output projection if missing
             if (weights.size() < 4) {
-                weights.resize(4, std::vector<std::vector<float>>(embedding_dim, std::vector<float>(embedding_dim, 0.0f)));
+                weights.resize(4);
                 weights[3] = std::vector<std::vector<float>>(embedding_dim, std::vector<float>(vocab_size, 0.0f));
             }
+
+            // Encode input text as token IDs
             std::vector<int> tokenSequence;
-            tokenSequence.reserve(in.size());
-            for (char c : in) {
+            for (char c : input) {
                 std::string s(1, c);
                 if (dictionary.count(s))
                     tokenSequence.push_back(dictionary[s]);
                 else
                     tokenSequence.push_back(dictionary["<unk>"]);
             }
+
             std::vector<std::string> invDict(vocab_size);
             for (auto& p : dictionary)
                 invDict[p.second] = p.first;
 
-            for (int step = 0; step < numPredict; step++) {
+            for (int step = 0; step < tokenCount; step++) {
 
-                int sequenceLength = tokenSequence.size();
+                int seqLen = tokenSequence.size();
 
-                // Build vector sequence
-                std::vector<std::vector<float>> vectorSequence(sequenceLength);
-                for (int i = 0; i < sequenceLength; i++)
-                    vectorSequence[i] = embeddings[tokenSequence[i]];
+                std::vector<std::vector<float>> vectorSeq(seqLen);
+                for (int i = 0; i < seqLen; i++)
+                    vectorSeq[i] = embeddings[tokenSequence[i]];
 
-                std::vector<std::vector<float>> Q = matMul(vectorSequence, weights[0]);
-                std::vector<std::vector<float>> K = matMul(vectorSequence, weights[1]);
-                std::vector<std::vector<float>> V = matMul(vectorSequence, weights[2]);
+                std::vector<std::vector<float>> Q = matMul(vectorSeq, weights[0]);
+                std::vector<std::vector<float>> K = matMul(vectorSeq, weights[1]);
+                std::vector<std::vector<float>> V = matMul(vectorSeq, weights[2]);
 
-                std::vector<std::vector<float>> attentionScores = matMul(Q, transpose(K));
-                for (int m = 0; m < sequenceLength; ++m)
-                    for (int n = 0; n < sequenceLength; ++n)
-                        attentionScores[m][n] /= sqrt(embedding_dim);
+                std::vector<std::vector<float>> scores = matMul(Q, transpose(K));
+                for (int i = 0; i < seqLen; i++)
+                    for (int j = 0; j < seqLen; j++)
+                        scores[i][j] /= sqrt(embedding_dim);
 
-                for (int m = 0; m < sequenceLength; ++m)
-                    for (int n = m + 1; n < sequenceLength; ++n)
-                        attentionScores[m][n] = -1e9f;
+                for (int i = 0; i < seqLen; i++)
+                    for (int j = i + 1; j < seqLen; j++)
+                        scores[i][j] = -1e9f;
 
-                std::vector<std::vector<float>> attentionWeights(sequenceLength);
-                for (int m = 0; m < sequenceLength; ++m)
-                    attentionWeights[m] = softmax(attentionScores[m]);
+                std::vector<std::vector<float>> att(seqLen);
+                for (int i = 0; i < seqLen; i++)
+                    att[i] = softmax(scores[i]);
 
-                std::vector<std::vector<float>> context = matMul(attentionWeights, V);
-                std::vector<std::vector<float>> hidden = matAdd(context, vectorSequence);
-                std::vector<std::vector<float>> output = matMul(hidden, weights[3]);
+                std::vector<std::vector<float>> context = matMul(att, V);
 
-                std::vector<float> lastProb = softmax(output.back());
+                std::vector<std::vector<float>> hidden = matAdd(context, vectorSeq);
+                std::vector<std::vector<float>> logits = matMul(hidden, weights[3]);
+
+                std::vector<float> probs = softmax(logits.back());
 
                 int nextToken = 0;
-                float maxVal = lastProb[0];
-                for (int i = 1; i < vocab_size; i++) {
-                    if (lastProb[i] > maxVal) {
-                        maxVal = lastProb[i];
+                float best = probs[0];
+                for (int i = 1; i < vocab_size; i++)
+                    if (probs[i] > best) {
+                        best = probs[i];
                         nextToken = i;
                     }
-                }
 
-                // Append token to sequence
+                // append + print
                 tokenSequence.push_back(nextToken);
-
-                cout << invDict[nextToken];
+                std::cout << invDict[nextToken];
             }
 
-            cout << endl;
-
+            std::cout << "\n";
         }
+
 	}
 
 	return 0;
