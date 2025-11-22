@@ -83,12 +83,15 @@ int main() {
 
             vector<int> tokenSequence = t.makeSequence(input, dictionary);
 
+            const int maxContext = 128; // limit for attention window
             for (int step = 0; step < tokenCount; ++step) {
-                int seqLen = tokenSequence.size();
-                std::vector<std::vector<float>> vectorSeq(seqLen);
+                int startIdx = std::max(0, (int)tokenSequence.size() - maxContext);
+                std::vector<int> contextTokens(tokenSequence.begin() + startIdx, tokenSequence.end());
+                int seqLen = contextTokens.size();
 
+                std::vector<std::vector<float>> vectorSeq(seqLen);
                 for (int i = 0; i < seqLen; ++i) {
-                    int token = tokenSequence[i];
+                    int token = contextTokens[i];
                     if (token < 0 || token >= embeddings.size()) token = unkToken;
                     vectorSeq[i] = embeddings[token];
                 }
@@ -102,6 +105,7 @@ int main() {
                     for (int j = 0; j < seqLen; ++j)
                         scores[i][j] /= sqrt(embedding_dim);
 
+                // causal mask
                 for (int i = 0; i < seqLen; ++i)
                     for (int j = i + 1; j < seqLen; ++j)
                         scores[i][j] = -1e9f;
@@ -114,13 +118,12 @@ int main() {
                 std::vector<std::vector<float>> hidden = matAdd(context, vectorSeq);
                 std::vector<std::vector<float>> output = matMul(hidden, weights[3]);
 
+                // softmax only on last token
                 std::vector<float> prob = softmax(output[seqLen - 1]);
-
                 int predictedToken = std::distance(prob.begin(), std::max_element(prob.begin(), prob.end()));
                 tokenSequence.push_back(predictedToken);
 
-                std::cout << t.decode(tokenSequence, dictionary) << endl;
-
+                std::cout << invDict[predictedToken];
             }
             std::cout << "\n";
         }

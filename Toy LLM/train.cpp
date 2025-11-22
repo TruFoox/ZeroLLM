@@ -3,7 +3,6 @@
 #include <string>
 #include <vector>
 #define NOMINMAX
-#include <sstream>
 #include <math.h>
 #include "IO.h"
 #include "doMath.h"
@@ -12,7 +11,6 @@
 #include <nlohmann/json.hpp>
 #include <mutex>
 #include <windows.h>
-#include <numeric>
 #include <algorithm>
 #include <random>
 
@@ -24,7 +22,7 @@ std::mutex updateMutex; // protects shared weights/embeddings
 void training::buildWeights() {
     bool keepTraining;
     int embedding_dim = 256;
-    float learning_rate = 1e-4; // Set to 5e-5 for finer training later
+    float learning_rate = 7e-5;
 
 
     char input;
