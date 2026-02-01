@@ -82,6 +82,7 @@ int main() {
             }
 
             vector<int> tokenSequence = t.makeSequence(input, dictionary);
+            float temperature = 0.8f; // adjust for randomness
 
             for (int step = 0; step < tokenCount; ++step) {
                 int seqLen = tokenSequence.size();
@@ -93,6 +94,7 @@ int main() {
                     vectorSeq[i] = embeddings[token];
                 }
 
+                // Forward pass
                 std::vector<std::vector<float>> Q = matMul(vectorSeq, weights[0]);
                 std::vector<std::vector<float>> K = matMul(vectorSeq, weights[1]);
                 std::vector<std::vector<float>> V = matMul(vectorSeq, weights[2]);
@@ -102,6 +104,7 @@ int main() {
                     for (int j = 0; j < seqLen; ++j)
                         scores[i][j] /= sqrt(embedding_dim);
 
+                // Causal mask
                 for (int i = 0; i < seqLen; ++i)
                     for (int j = i + 1; j < seqLen; ++j)
                         scores[i][j] = -1e9f;
@@ -114,14 +117,36 @@ int main() {
                 std::vector<std::vector<float>> hidden = matAdd(context, vectorSeq);
                 std::vector<std::vector<float>> output = matMul(hidden, weights[3]);
 
+                // Softmax for last token
                 std::vector<float> prob = softmax(output[seqLen - 1]);
 
-                int predictedToken = std::distance(prob.begin(), std::max_element(prob.begin(), prob.end()));
+                // Apply temperature
+                float sum = 0.0f;
+                for (int i = 0; i < prob.size(); ++i) {
+                    prob[i] = pow(prob[i], 1.0f / temperature);
+                    sum += prob[i];
+                }
+                for (auto& p : prob) p /= sum;
+
+                // Sample from probability distribution
+                float r = ((float)rand() / RAND_MAX);
+                float cumulative = 0.0f;
+                int predictedToken = 0;
+                for (int i = 0; i < prob.size(); ++i) {
+                    cumulative += prob[i];
+                    if (r <= cumulative) {
+                        predictedToken = i;
+                        break;
+                    }
+                }
+
                 tokenSequence.push_back(predictedToken);
 
-                std::cout << t.decode(tokenSequence, dictionary) << endl;
-
+                // Print only the new token
+                std::cout << invDict[predictedToken+1];
             }
+            std::cout << std::endl;
+
             std::cout << "\n";
         }
 

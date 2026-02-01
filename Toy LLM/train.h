@@ -17,8 +17,10 @@ public:
     /* Generate embeddings for the dictionary */
     std::vector<std::vector<float>> generateEmbeddings(const int embedding_dim, const std::unordered_map<std::string, int>& dictionary);
 
+    std::vector<float> stableSoftmax(const std::vector<float>& x);
+
     /* Generate positional encodings for the dictionary */
-    std::vector<std::vector<float>> generatePE(const int embedding_dim, std::vector<std::vector<float>> updatedEmbeddings);
+    std::vector<std::vector<float>> generatePE(int max_seq_len, int embedding_dim);
 
     /* Generate weight matrices */
     std::vector<std::vector<std::vector<float>>> generateWeights(const int embedding_dim, const int vocab_size);
