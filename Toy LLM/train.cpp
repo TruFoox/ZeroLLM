@@ -20,16 +20,18 @@
 using json = nlohmann::json;
 
 std::mutex updateMutex; // protects shared weights/embeddings
-std::vector<std::vector<float>> gWQ, gWK, gWV, gW3;
-std::vector<std::vector<float>> gEmbeddings;
-std::mutex gradMutex; // protects gradient accumulators
 std::mutex printMutex; // Stops jumbled console output
 
-std::atomic<int> sequencesProcessed{ 0 };
+std::atomic<int> sequencesProcessed;
+std::atomic<bool> keepTraining{ true };
 
-/* There are a lot of comments because this is a personal learning project */
+/* There are a lot of comments because this is a personal learning project
+   - This model is per-sequence SGD*/
 void training::buildWeights() {
-    std::atomic<bool> keepTraining{ true };
+    keepTraining.store(true);
+    sequencesProcessed.store(0);
+
+
     int embedding_dim = 256;
     float learning_rate = 3e-4;
 
@@ -59,8 +61,7 @@ void training::buildWeights() {
     if (input == 'y' || input == 'Y') {
         // Generate embeddings and positional encodings
         std::cout << "Generating embeddings...\n";
-        std::vector<std::vector<float>> finalEmbeddings =
-            generateEmbeddings(embedding_dim, dictionary);
+        finalEmbeddings = generateEmbeddings(embedding_dim, dictionary);
 
         write2DVector("../embeddings.txt", finalEmbeddings);
         std::cout << "Embeddings updated. Total tokens: " << finalEmbeddings.size() << "\n";
@@ -262,19 +263,13 @@ void training::buildWeights() {
 
             {
                 std::lock_guard<std::mutex> lock(printMutex);
-                for (int t = 0; t < sequenceLength; ++t) {
-
-                    auto it = std::max_element(outputProb[t].begin(), outputProb[t].end());
-                    int predictedToken = std::distance(outputProb[t].begin(), it);
-                    int actualToken = (t + 1 < sequenceLength) ? tokenSequence[t + 1] : tokenSequence[t];
-                    std::cout << "Thread " << threadNum
-                        << " | Sequence #" << (i + 1) << "/" << totalSequences
-                        << " | Position " << t
-                        << " | Loss " << combinedLoss
-                        << " | Predicted: " << decode({ predictedToken }, dictionary)
-                        << " | Actual: " << decode({ actualToken }, dictionary) << std::endl;
-                }
+                std::cout
+                    << "Thread " << threadNum
+                    << " | Sequence #" << (i + 1) << "/" << totalSequences
+                    << " | Avg Loss " << combinedLoss
+                    << std::endl;
             }
+
 
 
             /* Backward pass */
@@ -290,17 +285,18 @@ void training::buildWeights() {
             for (int m = 0; m + 1 < sequenceLength; ++m)
                 for (int n = 0; n < vocab_size; ++n)
                     error[m][n] =
-                    (outputProb[m][n] - (n == tokenSequence[m + 1] ? 1.0f : 0.0f)) / (sequenceLength - 1);
+                    (outputProb[m][n] - (n == tokenSequence[m + 1] ? 1.0f : 0.0f));
+
 
 
             std::fill(error.back().begin(), error.back().end(), 0.0f);
 
             // Gradient clipping and accumulation:
-            // - We clip gradients to a small range (e.g. [-1,1]) so a single batch doesn't blow up weights.
+            // - We clip gradients to a small range (e.g. [-5,5]) so a single batch doesn't blow up weights.
             // - Per-thread gradients are then added into the global accumulators under a mutex.
             // - After all threads finish we take an SGD step: weights -= learning_rate * accumulated_gradients.
             gradW3 = matMul(transpose(hidden), error);
-            training::clip(gradW3, 1.0f);
+            training::clip(gradW3, 5.0f);
 
 
 
@@ -321,7 +317,6 @@ void training::buildWeights() {
             // - dV_to_X shows how the gradient that went into values maps back to each input vector.
             //   We add dV_to_X to per-position embedding gradients so token embeddings also get updated.
             gradWV = matMul(transpose(vectorSequence), dContext);
-            training::clip(gradWV, 1.0f);
 
             std::vector<std::vector<float>> dV_to_X =
                 matMul(dContext, transpose(weights[2]));
@@ -372,9 +367,9 @@ void training::buildWeights() {
 
             gradWQ = matMul(transpose(vectorSequence), dQ);
             gradWK = matMul(transpose(vectorSequence), dK);
-            training::clip(gradWQ, 1.0f);
-            training::clip(gradWK, 1.0f);
-            training::clip(gradWV, 1.0f);
+            training::clip(gradWQ, 5.0f);
+            training::clip(gradWK, 5.0f);
+            training::clip(gradWV, 5.0f);
 
 
             std::vector<std::vector<float>> temp;
@@ -389,35 +384,43 @@ void training::buildWeights() {
                     gradEmbeddings[t][d] += temp[t][d];
 
 
-            training::clip(gradEmbeddings, 1.0f);
+            training::clip(gradEmbeddings, 5.0f);
 
 
-            std::vector<std::vector<float>> tokenGradients(finalEmbeddings.size(), std::vector<float>(embedding_dim, 0.0f));
+            std::unordered_map<int, std::vector<float>> tokenGradients;
 
             // Combine gradients for each token
             for (int t = 0; t < sequenceLength; ++t) {
                 int token = tokenSequence[t];
+                auto& g = tokenGradients[token];
+                if (g.empty()) g.resize(embedding_dim, 0.0f);
+
                 for (int d = 0; d < embedding_dim; ++d)
-                    tokenGradients[token][d] += gradEmbeddings[t][d];
+                    g[d] += gradEmbeddings[t][d];
             }
 
             {
-                std::lock_guard<std::mutex> lock(gradMutex);
+                std::lock_guard<std::mutex> lock(updateMutex);
 
-                for (int m = 0; m < embedding_dim; ++m)
+                // Q, K, V
+                for (int m = 0; m < embedding_dim; ++m) {
                     for (int n = 0; n < embedding_dim; ++n) {
-                        gWQ[m][n] += gradWQ[m][n];
-                        gWK[m][n] += gradWK[m][n];
-                        gWV[m][n] += gradWV[m][n];
+                        weights[0][m][n] -= learning_rate * gradWQ[m][n];
+                        weights[1][m][n] -= learning_rate * gradWK[m][n];
+                        weights[2][m][n] -= learning_rate * gradWV[m][n];
                     }
+                }
 
+                // Output projection
                 for (int m = 0; m < embedding_dim; ++m)
                     for (int n = 0; n < vocab_size; ++n)
-                        gW3[m][n] += gradW3[m][n];
+                        weights[3][m][n] -= learning_rate * gradW3[m][n];
 
-                for (int token = 0; token < tokenGradients.size(); ++token)
+                // Embeddings
+                for (auto& [token, grad] : tokenGradients)
                     for (int d = 0; d < embedding_dim; ++d)
-                        gEmbeddings[token][d] += tokenGradients[token][d];
+                        finalEmbeddings[token][d] -= learning_rate * grad[d];
+
             }
 
 
@@ -450,14 +453,6 @@ void training::buildWeights() {
         std::cout << "Input # of threads: ";
         std::cin >> threads;
 
-		// Initialize global gradients
-        gWQ.assign(embedding_dim, std::vector<float>(embedding_dim, 0.0f));
-        gWK.assign(embedding_dim, std::vector<float>(embedding_dim, 0.0f));
-        gWV.assign(embedding_dim, std::vector<float>(embedding_dim, 0.0f));
-        gW3.assign(embedding_dim, std::vector<float>(vocab_size, 0.0f));
-
-        gEmbeddings.assign(finalEmbeddings.size(),
-            std::vector<float>(embedding_dim, 0.0f));
 
         std::vector<std::thread> workers;
         workers.reserve(threads);
@@ -472,26 +467,7 @@ void training::buildWeights() {
             t.join();
         }
 
-        float scale = 1.0f / threads;
-
-        // Q, K, V
-        for (int m = 0; m < embedding_dim; ++m) {
-            for (int n = 0; n < embedding_dim; ++n) {
-                weights[0][m][n] -= learning_rate * gWQ[m][n] * scale;
-                weights[1][m][n] -= learning_rate * gWK[m][n] * scale;
-                weights[2][m][n] -= learning_rate * gWV[m][n] * scale;
-            }
-        }
-
-        // Output projection
-        for (int m = 0; m < embedding_dim; ++m)
-            for (int n = 0; n < vocab_size; ++n)
-                weights[3][m][n] -= learning_rate * gW3[m][n] * scale;
-
-        // Embeddings
-        for (int token = 0; token < finalEmbeddings.size(); ++token)
-            for (int d = 0; d < embedding_dim; ++d)
-                finalEmbeddings[token][d] -= learning_rate * gEmbeddings[token][d] * scale;
+        
 
 
         write3DVector("../weights.txt", weights);
