@@ -33,7 +33,10 @@ void training::buildWeights() {
     int embedding_dim = 256;
     float learning_rate = 3e-4;
 
-    // generate positional encodings
+    // Positional encoding:
+    // - Tokens by themselves don't tell the model their position in the sentence.
+    // - We add a fixed pattern (sine/cosine) to each token embedding depending on its position.
+    // - This makes the same word at position 2 different from the same word at position 5.
     const std::vector<std::vector<float>> pe = generatePE(128, embedding_dim);
 
     char input;
@@ -56,12 +59,8 @@ void training::buildWeights() {
     if (input == 'y' || input == 'Y') {
         // Generate embeddings and positional encodings
         std::cout << "Generating embeddings...\n";
-        std::vector<std::vector<float>> updatedEmbeddings =
+        std::vector<std::vector<float>> finalEmbeddings =
             generateEmbeddings(embedding_dim, dictionary);
-
-        // Combine embeddings and PEs
-        std::cout << "Combining embeddings and positional encodings...\n";
-        finalEmbeddings = updatedEmbeddings;
 
         write2DVector("../embeddings.txt", finalEmbeddings);
         std::cout << "Embeddings updated. Total tokens: " << finalEmbeddings.size() << "\n";
@@ -82,7 +81,10 @@ void training::buildWeights() {
         if (finalEmbeddings.empty() || weights.empty())
             throw std::runtime_error("No existing embeddings or weights found. Please build first!");
 
-        // Ensure correct shapes
+        // Ensure correct shapes for weight matrices:
+        // - WQ, WK, WV should be square: [embedding_dim x embedding_dim].
+        // - WO (output) should be [embedding_dim x vocab_size].
+		// If a loaded file has the wrong shape we replace it with zeros so dimensions match math below. That being said, this will break training so if this is needed something is very wrong.
         if (weights.size() < 4) {
             std::cout << "Fixing incomplete weights...\n";
             weights.resize(4,
@@ -186,7 +188,10 @@ void training::buildWeights() {
  
 
 
-            // Attention scores
+            // Attention logits and scaling:
+            // - We compute similarity scores between tokens: score = Query · Key.
+            // - We divide those scores by sqrt(d) so they stay in a sensible numeric range.
+            // - These raw scores are called "logits" (just unnormalized numbers).
             std::vector<std::vector<float>> attentionScores = matMul(Q, transpose(K));
             for (int m = 0; m < sequenceLength; ++m)
                 for (int n = 0; n < sequenceLength; ++n) {
@@ -194,19 +199,24 @@ void training::buildWeights() {
 
                 }
 
-            // Mask future tokens
+            // Causal mask and clamping:
+            // - Mask: set scores for future positions to a very large negative number so they don't contribute.
+            //   (That makes their softmax probability effectively zero.)
+            // - Clamp: limit logits to a range like [-20, 20] to avoid numerical problems when taking exp().
             for (int m = 0; m < sequenceLength; ++m)
                 for (int n = m + 1; n < sequenceLength; ++n)
                     attentionScores[m][n] = -1e9f;
 
-            // Clamp after masking
             for (int m = 0; m < sequenceLength; ++m)
                 for (int n = 0; n < sequenceLength; ++n) {
                     if (attentionScores[m][n] < -20.0f) attentionScores[m][n] = -20.0f;
                     if (attentionScores[m][n] > 20.0f) attentionScores[m][n] = 20.0f;
                 }
 
-            // Softmax
+            // Softmax and loss:
+            // - Softmax: turns a set of logits into probabilities that add to 1.
+            // - Cross-entropy loss for a position = -log(probability of the true next token).
+            // - We average this loss across positions. The loss tells us how bad the model's guess was.
             std::vector<std::vector<float>> attentionWeights(sequenceLength,
                 std::vector<float>(sequenceLength));
             for (int m = 0; m < sequenceLength; ++m)
@@ -215,7 +225,9 @@ void training::buildWeights() {
             // Context
             context = matMul(attentionWeights, V);
 
-            // Residual: hidden = context + vectorSequence
+            // Residual connection (simple):
+            // - We add the attention result (context) to the original input vector.
+            // - This "shortcut" helps the model keep the original token info and makes learning easier.
             std::vector<std::vector<float>> hidden = matAdd(context, vectorSequence);
 
             // I should add layer normalzation here
@@ -232,7 +244,11 @@ void training::buildWeights() {
 
 
 
-            // Allocate gradient accumulator 
+            // Backprop through attention softmax:
+            // - For each query row, softmax turns logits into weights s.
+            // - Upstream gradient g for those weights turns into logits-gradient d using:
+            //     d = s * (g - (s·g))
+            // - This computes how much to change the attention logits so the resulting weights change in the right direction.
             std::vector<std::vector<float>> gradEmbeddings(
                 sequenceLength,
                 std::vector<float>(embedding_dim, 0.0f)
@@ -263,6 +279,12 @@ void training::buildWeights() {
 
             /* Backward pass */
 
+            // Backpropagation:
+            // - We look at the difference between predicted probabilities and the true next token.
+            // - That difference is the "error." We push that error backwards through the math below
+            //   to figure out small changes to the weights that would make future predictions better.
+            // - In short: measure the mistake, then nudge weights a little so next time the model errs less.
+
             // Compute error
             std::vector<std::vector<float>> error(sequenceLength, std::vector<float>(vocab_size, 0.0f));
             for (int m = 0; m + 1 < sequenceLength; ++m)
@@ -273,7 +295,10 @@ void training::buildWeights() {
 
             std::fill(error.back().begin(), error.back().end(), 0.0f);
 
-            // Gradient for W_o 
+            // Gradient clipping and accumulation:
+            // - We clip gradients to a small range (e.g. [-1,1]) so a single batch doesn't blow up weights.
+            // - Per-thread gradients are then added into the global accumulators under a mutex.
+            // - After all threads finish we take an SGD step: weights -= learning_rate * accumulated_gradients.
             gradW3 = matMul(transpose(hidden), error);
             training::clip(gradW3, 1.0f);
 
@@ -291,7 +316,10 @@ void training::buildWeights() {
                     gradEmbeddings[t][d] += dHidden[t][d];
 
 
-            // Gradients for V
+            // Values (V) contribution:
+            // - gradWV is how much the V projection matrix should change for this sequence.
+            // - dV_to_X shows how the gradient that went into values maps back to each input vector.
+            //   We add dV_to_X to per-position embedding gradients so token embeddings also get updated.
             gradWV = matMul(transpose(vectorSequence), dContext);
             training::clip(gradWV, 1.0f);
 
@@ -305,7 +333,9 @@ void training::buildWeights() {
             // Gradient for attention
             std::vector<std::vector<float>> tempAttention = matMul(dContext, transpose(V));
 
-            // Block gradients from masked (future) tokens
+            // Masked positions must not affect gradients:
+            // - We zero gradients corresponding to future positions because they were blocked in forward pass.
+            // - This keeps learning consistent: if a forward value was ignored, its gradient is ignored too.
             for (int m = 0; m < sequenceLength; ++m)
                 for (int n = m + 1; n < sequenceLength; ++n)
                     tempAttention[m][n] = 0.0f;
@@ -392,7 +422,7 @@ void training::buildWeights() {
 
 
 
-            if (GetAsyncKeyState(VK_PAUSE) & 0x8000 || !keepTraining.load(std::memory_order_relaxed))
+			if (GetAsyncKeyState(VK_PAUSE) & 0x8000 || !keepTraining.load(std::memory_order_relaxed)) // test for pause key
             {
                 std::cout << "\nQuitting thread #" << threadNum;
                 keepTraining.store(false, std::memory_order_relaxed);
