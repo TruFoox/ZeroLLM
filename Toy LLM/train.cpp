@@ -22,7 +22,10 @@ using json = nlohmann::json;
 std::mutex updateMutex; // protects shared weights/embeddings
 std::vector<std::vector<float>> gWQ, gWK, gWV, gW3;
 std::vector<std::vector<float>> gEmbeddings;
-std::mutex gradMutex;
+std::mutex gradMutex; // protects gradient accumulators
+std::mutex printMutex; // Stops jumbled console output
+
+std::atomic<int> sequencesProcessed{ 0 };
 
 /* There are a lot of comments because this is a personal learning project */
 void training::buildWeights() {
@@ -241,8 +244,8 @@ void training::buildWeights() {
 
             combinedLoss /= (sequenceLength - 1);
 
-            if (threadNum == 0 && (i % 50 == 0)) {
-                std::lock_guard<std::mutex> lock(updateMutex);
+            {
+                std::lock_guard<std::mutex> lock(printMutex);
                 for (int t = 0; t < sequenceLength; ++t) {
 
                     auto it = std::max_element(outputProb[t].begin(), outputProb[t].end());
@@ -396,6 +399,16 @@ void training::buildWeights() {
                 break;
             }
         }
+
+        int seqCount = ++sequencesProcessed;
+
+        if (seqCount % 50 == 0 && threadNum == 0) {
+            std::lock_guard<std::mutex> lock(updateMutex);
+            std::cout << "\nAutosaving at sequence " << seqCount << "...\n";
+            write3DVector("../weights.txt", weights);
+            write2DVector("../embeddings.txt", finalEmbeddings);
+        }
+
     };
 
     while (keepTraining.load()) {
@@ -448,14 +461,9 @@ void training::buildWeights() {
             for (int d = 0; d < embedding_dim; ++d)
                 finalEmbeddings[token][d] -= learning_rate * gEmbeddings[token][d] * scale;
 
-        static int autosaveStep = 0;
-        autosaveStep++;
 
-        if (autosaveStep % 10 == 0) {
-            std::cout << "Autosaving checkpoint...\n";
-            write3DVector("../weights.txt", weights);
-            write2DVector("../embeddings.txt", finalEmbeddings);
-        }
+        write3DVector("../weights.txt", weights);
+        write2DVector("../embeddings.txt", finalEmbeddings);
 
 
         std::cout << "\nTraining complete!\n";
