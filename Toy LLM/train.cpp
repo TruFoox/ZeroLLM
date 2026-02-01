@@ -398,19 +398,21 @@ void training::buildWeights() {
                 keepTraining.store(false, std::memory_order_relaxed);
                 break;
             }
-        }
 
-        int seqCount = ++sequencesProcessed;
+			// Autosave every 50 sequences
+            int seqCount = ++sequencesProcessed;
 
-        if (seqCount % 50 == 0 && threadNum == 0) {
-            std::lock_guard<std::mutex> lock(updateMutex);
-            std::cout << "\nAutosaving at sequence " << seqCount << "...\n";
-            write3DVector("../weights.txt", weights);
-            write2DVector("../embeddings.txt", finalEmbeddings);
+            if (seqCount % 50 == 0) {
+                std::lock_guard<std::mutex> lock(updateMutex);
+                std::cout << "\nAutosaving at sequence " << seqCount << "...\n";
+                write3DVector("../weights.txt", weights);
+                write2DVector("../embeddings.txt", finalEmbeddings);
+            }
         }
 
     };
 
+	// Start training loop
     while (keepTraining.load()) {
         keepTraining = true;
         int threads;
