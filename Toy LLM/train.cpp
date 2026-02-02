@@ -183,6 +183,10 @@ void training::buildWeights() {
             /* Forward pass */
             std::vector<std::vector<float>> Q, K, V;
 
+			// Normalize input vectors
+            for (auto& v : vectorSequence)
+                normalizeVector(v);
+
             Q = matMul(vectorSequence, weights[0]);
             K = matMul(vectorSequence, weights[1]);
             V = matMul(vectorSequence, weights[2]);
@@ -229,9 +233,13 @@ void training::buildWeights() {
             // Residual connection (simple):
             // - We add the attention result (context) to the original input vector.
             // - This "shortcut" helps the model keep the original token info and makes learning easier.
-            std::vector<std::vector<float>> hidden = matAdd(context, vectorSequence);
+            std::vector<std::vector<float>> hidden =
+                matAdd(context, vectorSequence);
 
-            // I should add layer normalzation here
+
+			// Normalize hidden vectors
+            for (auto& v : hidden)
+                normalizeVector(v);
 
             // Final projection
             output = matMul(hidden, weights[3]);
@@ -335,9 +343,12 @@ void training::buildWeights() {
 
             // Values (V) contribution:
             // - gradWV is how much the V projection matrix should change for this sequence.
-            // - dV_to_X shows how the gradient that went into values maps back to each input vector.
-            //   We add dV_to_X to per-position embedding gradients so token embeddings also get updated.
-            gradWV = matMul(transpose(vectorSequence), dContext);
+            // - The attention weights decide how much each value contributed to the context.
+            // - We backprop through those weights to get gradients for V.
+            // - Those gradients are also pushed back to the input vectors so token embeddings update correctly.
+            auto dV = matMul(transpose(attentionWeights), dContext);
+            gradWV = matMul(transpose(vectorSequence), dV);
+
 
             std::vector<std::vector<float>> dV_to_X =
                 matMul(dContext, transpose(weights[2]));
@@ -881,4 +892,13 @@ std::unordered_map<std::string, int> training::read_dict() {
     if (j.is_null() || !j.is_object() || j.empty()) {return {};}
 
     return j.get<std::unordered_map<std::string, int>>();
+}
+
+void normalizeVector(std::vector<float>& v) {
+    float norm = 0.0f;
+    for (float x : v) norm += x * x;
+    norm = std::sqrt(norm) + 1e-6f;
+
+    for (float& x : v)
+        x /= norm;
 }
