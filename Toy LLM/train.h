@@ -19,6 +19,8 @@ public:
 
     std::vector<float> stableSoftmax(const std::vector<float>& x);
 
+    void normalizeVector(std::vector<float>& v);
+
     /* Generate positional encodings for the dictionary */
     std::vector<std::vector<float>> generatePE(int max_seq_len, int embedding_dim);
 

@@ -24,13 +24,13 @@ std::mutex printMutex; // Stops jumbled console output
 
 std::atomic<int> sequencesProcessed;
 std::atomic<bool> keepTraining{ true };
+std::atomic<bool> useConsole{ true };
 
 /* There are a lot of comments because this is a personal learning project
    - This model is per-sequence SGD*/
 void training::buildWeights() {
     keepTraining.store(true);
     sequencesProcessed.store(0);
-
 
     int embedding_dim = 256;
     float learning_rate = 3e-4;
@@ -207,15 +207,15 @@ void training::buildWeights() {
             // Causal mask and clamping:
             // - Mask: set scores for future positions to a very large negative number so they don't contribute.
             //   (That makes their softmax probability effectively zero.)
-            // - Clamp: limit logits to a range like [-20, 20] to avoid numerical problems when taking exp().
+            // - Clamp: limit logits to a range like [-10, 10] to avoid numerical problems when taking exp().
             for (int m = 0; m < sequenceLength; ++m)
                 for (int n = m + 1; n < sequenceLength; ++n)
                     attentionScores[m][n] = -1e9f;
 
             for (int m = 0; m < sequenceLength; ++m)
                 for (int n = 0; n < sequenceLength; ++n) {
-                    if (attentionScores[m][n] < -20.0f) attentionScores[m][n] = -20.0f;
-                    if (attentionScores[m][n] > 20.0f) attentionScores[m][n] = 20.0f;
+                    if (attentionScores[m][n] < -10.0f) attentionScores[m][n] = -10.0f;
+                    if (attentionScores[m][n] > 10.0f) attentionScores[m][n] = 10.0f;
                 }
 
             // Softmax and loss:
@@ -236,10 +236,6 @@ void training::buildWeights() {
             std::vector<std::vector<float>> hidden =
                 matAdd(context, vectorSequence);
 
-
-			// Normalize hidden vectors
-            for (auto& v : hidden)
-                normalizeVector(v);
 
             // Final projection
             output = matMul(hidden, weights[3]);
@@ -269,33 +265,35 @@ void training::buildWeights() {
 
             combinedLoss /= (sequenceLength - 1);
 
-            {
-                std::lock_guard<std::mutex> lock(printMutex);
+			if (useConsole) {
+                {
+                    std::lock_guard<std::mutex> lock(printMutex);
 
-                for (int t = 0; t < sequenceLength - 1; ++t) {
+                    for (int t = 0; t < sequenceLength - 1; ++t) {
 
-                    int predictedToken = -1;
-                    float bestProb = -1.0f;
+                        int predictedToken = -1;
+                        float bestProb = -1.0f;
 
-					// Calculate predicted token
-                    for (int v = 0; v < vocab_size; ++v) {
-                        if (v == 0) continue; // forbid UNK
-                        if (outputProb[t][v] > bestProb) {
-                            bestProb = outputProb[t][v];
-                            predictedToken = v;
+                        // Calculate predicted token
+                        for (int v = 0; v < vocab_size; ++v) {
+                            if (v == 0) continue; // forbid UNK
+                            if (outputProb[t][v] > bestProb) {
+                                bestProb = outputProb[t][v];
+                                predictedToken = v;
+                            }
                         }
+
+                        int actualToken = tokenSequence[t + 1];
+
+                        std::cout
+                            << "Thread " << threadNum
+                            << " | Sequence #" << (i + 1) << "/" << totalSequences
+                            << " | Position " << t
+                            << " | Loss " << combinedLoss
+                            << " | Predicted: " << decode({ predictedToken }, dictionary)
+                            << " | Actual: " << decode({ actualToken }, dictionary)
+                            << std::endl;
                     }
-
-                    int actualToken = tokenSequence[t + 1];
-
-                    std::cout
-                        << "Thread " << threadNum
-                        << " | Sequence #" << (i + 1) << "/" << totalSequences
-                        << " | Position " << t
-                        << " | Loss " << combinedLoss
-                        << " | Predicted: " << decode({ predictedToken }, dictionary)
-                        << " | Actual: " << decode({ actualToken }, dictionary)
-                        << std::endl;
                 }
             }
 
@@ -462,6 +460,16 @@ void training::buildWeights() {
                 std::cout << "\nQuitting thread #" << threadNum;
                 keepTraining.store(false, std::memory_order_relaxed);
                 break;
+            }
+
+            if (GetAsyncKeyState(VK_HOME) & 0x8000) // test for home key (skip cout)
+            {
+                useConsole.store(false);
+            }
+
+            if (GetAsyncKeyState(VK_END) & 0x8000) // test for end key (show cout)
+            {
+                useConsole.store(true);
             }
 
 			// Autosave every 50 sequences
@@ -827,13 +835,12 @@ std::string training::decode(const std::vector<int>& tokens, const std::unordere
     std::string result;
     result.reserve(tokens.size() * 8); // rough estimate to avoid reallocations
 
-    for (size_t i = 0; i < tokens.size(); ++i) {
-        auto it = reverseDict.find(tokens[i]);
-        if (it != reverseDict.end()) {
-            if (!result.empty()) result += ' ';
+    for (int token : tokens) {
+        auto it = reverseDict.find(token);
+        if (it != reverseDict.end())
             result += it->second;
-        }
     }
+
 
     return result;
 }
@@ -894,7 +901,7 @@ std::unordered_map<std::string, int> training::read_dict() {
     return j.get<std::unordered_map<std::string, int>>();
 }
 
-void normalizeVector(std::vector<float>& v) {
+void training::normalizeVector(std::vector<float>& v) {
     float norm = 0.0f;
     for (float x : v) norm += x * x;
     norm = std::sqrt(norm) + 1e-6f;
