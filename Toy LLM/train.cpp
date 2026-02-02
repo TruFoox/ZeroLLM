@@ -263,11 +263,32 @@ void training::buildWeights() {
 
             {
                 std::lock_guard<std::mutex> lock(printMutex);
-                std::cout
-                    << "Thread " << threadNum
-                    << " | Sequence #" << (i + 1) << "/" << totalSequences
-                    << " | Avg Loss " << combinedLoss
-                    << std::endl;
+
+                for (int t = 0; t < sequenceLength - 1; ++t) {
+
+                    int predictedToken = -1;
+                    float bestProb = -1.0f;
+
+					// Calculate predicted token
+                    for (int v = 0; v < vocab_size; ++v) {
+                        if (v == 0) continue; // forbid UNK
+                        if (outputProb[t][v] > bestProb) {
+                            bestProb = outputProb[t][v];
+                            predictedToken = v;
+                        }
+                    }
+
+                    int actualToken = tokenSequence[t + 1];
+
+                    std::cout
+                        << "Thread " << threadNum
+                        << " | Sequence #" << (i + 1) << "/" << totalSequences
+                        << " | Position " << t
+                        << " | Loss " << combinedLoss
+                        << " | Predicted: " << decode({ predictedToken }, dictionary)
+                        << " | Actual: " << decode({ actualToken }, dictionary)
+                        << std::endl;
+                }
             }
 
 
@@ -691,6 +712,9 @@ void training::buildDictionary() {
     std::string delims = " ,!?-()'.\"[];:/–\n——&{}";
     std::string currentWord;
 
+    // Add unknown token
+    define("<UNK>", dictionary);
+
     /* Tokenization */
     for (int i = 0; i < normalizedData.size(); ++i) {
         char currentChar = normalizedData[i];
@@ -754,8 +778,6 @@ void training::buildDictionary() {
         }
     }
 
-	// Add unknown token
-	define("<UNK>", dictionary);
     
 
 
