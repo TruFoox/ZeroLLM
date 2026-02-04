@@ -1,6 +1,6 @@
 # From-Scratch Transformer (C++)
 
-A small Transformer-style language model implemented **entirely from scratch in C++**, using no external LLM libraries.
+A small (~700 lines in train.cpp) Transformer-style language model implemented **entirely from scratch in C++**, using no external LLM libraries.
 
 This project exists to learn and experiment with the *actual mechanics* of Transformers: attention, softmax, loss, and backprop, without ML frameworks.
 
