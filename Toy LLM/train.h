@@ -32,7 +32,9 @@ public:
 
     /* Splits into sequences */
     std::vector<int> makeSequence(const std::string& data, const std::unordered_map<std::string, int>& dictionary);
-   
+
+    void layerNorm(std::vector<std::vector<float>>& x, float eps = 1e-5f);
+
     void clip(std::vector<std::vector<float>>& grad, float threshold);
 
     /* Write new word to dictionary */

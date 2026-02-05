@@ -33,7 +33,7 @@ void training::buildWeights() {
     sequencesProcessed.store(0);
 
     int embedding_dim = 256;
-    float learning_rate = 3e-4;
+    float learning_rate = 1e-4;
 
     // Positional encoding:
     // - Tokens by themselves don't tell the model their position in the sentence.
@@ -176,19 +176,10 @@ void training::buildWeights() {
 
                 }
 
-            // Causal mask and clamping:
-            // - Mask: set scores for future positions to a very large negative number so they don't contribute.
-            //   (That makes their softmax probability effectively zero.)
-            // - Clamp: limit logits to a range like [-10, 10] to avoid numerical problems when taking exp().
+            // Causal mask: set scores for future positions to a very large negative number so they don't contribute (That makes their softmax probability effectively zero.)
             for (int m = 0; m < sequenceLength; ++m)
                 for (int n = m + 1; n < sequenceLength; ++n)
                     attentionScores[m][n] = -1e9f;
-
-            for (int m = 0; m < sequenceLength; ++m)
-                for (int n = 0; n < sequenceLength; ++n) {
-                    if (attentionScores[m][n] < -10.0f) attentionScores[m][n] = -10.0f;
-                    if (attentionScores[m][n] > 10.0f) attentionScores[m][n] = 10.0f;
-                }
 
             // Softmax and loss:
             // - Softmax: turns a set of logits into probabilities that add to 1.
@@ -205,9 +196,10 @@ void training::buildWeights() {
             // Residual connection (simple):
             // - We add the attention result (context) to the original input vector.
             // - This "shortcut" helps the model keep the original token info and makes learning easier.
-            std::vector<std::vector<float>> hidden =
-                matAdd(context, vectorSequence);
+            std::vector<std::vector<float>> hidden = matAdd(context, vectorSequence);
+            layerNorm(hidden);
 
+            auto hidden_before_ffn = hidden;
 
             // Feed Forward
 
@@ -216,9 +208,11 @@ void training::buildWeights() {
             std::vector<std::vector<float>> ff2 = matMul(ff1, FFWeights[1]);
 
             hidden = matAdd(hidden, ff2);
+            layerNorm(hidden);
 
             // Final projection
             output = matMul(hidden, weights[3]);
+
 
             // Softmax on output
             std::vector<std::vector<float>> outputProb(sequenceLength,
@@ -244,6 +238,7 @@ void training::buildWeights() {
                 combinedLoss += -log(outputProb[t][tokenSequence[t + 1]] + 1e-9f);
 
             combinedLoss /= (sequenceLength - 1);
+
 
 			if (useConsole) {
                 {
@@ -309,6 +304,9 @@ void training::buildWeights() {
 
             // Backprop through W_o
             std::vector<std::vector<float>> dHidden = matMul(error, transpose(weights[3]));
+            for (int t = 0; t < sequenceLength; ++t)
+                for (int d = 0; d < embedding_dim; ++d)
+                    gradEmbeddings[t][d] += dHidden[t][d];
 
 
             // Split residual
@@ -330,7 +328,7 @@ void training::buildWeights() {
                         dFF1[t][d] = 0.0f;
 
             // Grad for FF1
-            auto gradW_ff1 = matMul(transpose(hidden), dFF1);
+            auto gradW_ff1 = matMul(transpose(hidden_before_ffn), dFF1);
             training::clip(gradW_ff1, 5.0f);
 
             // Backprop to hidden
@@ -456,6 +454,7 @@ void training::buildWeights() {
                     for (int n = 0; n < vocab_size; ++n)
                         weights[3][m][n] -= learning_rate * gradW3[m][n];
 
+
                 // Embeddings
                 for (auto& [token, grad] : tokenGradients)
                     for (int d = 0; d < embedding_dim; ++d)
@@ -490,6 +489,7 @@ void training::buildWeights() {
                 std::cout << "\nAutosaving at sequence " << seqCount << "...\n";
                 write3DVector("../weights.txt", weights);
                 write2DVector("../embeddings.txt", finalEmbeddings);
+                write3DVector("../FFweights.txt", FFWeights);
             }
         }
 
@@ -938,4 +938,25 @@ std::unordered_map<std::string, int> training::read_dict() {
     if (j.is_null() || !j.is_object() || j.empty()) {return {};}
 
     return j.get<std::unordered_map<std::string, int>>();
+}
+
+void training::layerNorm(std::vector<std::vector<float>>& x, float eps) {
+    for (auto& row : x) {
+        float mean = 0.0f;
+        float var = 0.0f;
+
+        for (float v : row) mean += v;
+        mean /= row.size();
+
+        for (float v : row) {
+            float d = v - mean;
+            var += d * d;
+        }
+        var /= row.size();
+
+        float invStd = 1.0f / std::sqrt(var + eps);
+
+        for (float& v : row)
+            v = (v - mean) * invStd;
+    }
 }
