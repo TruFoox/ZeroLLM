@@ -153,6 +153,8 @@ void training::buildWeights() {
                 vectorSequence.push_back(v);
             }
 
+            layerNorm(vectorSequence);
+
 
 
             /* Forward pass */
@@ -197,7 +199,6 @@ void training::buildWeights() {
             // - We add the attention result (context) to the original input vector.
             // - This "shortcut" helps the model keep the original token info and makes learning easier.
             std::vector<std::vector<float>> hidden = matAdd(context, vectorSequence);
-            layerNorm(hidden);
 
             auto hidden_before_ffn = hidden;
 
@@ -208,7 +209,6 @@ void training::buildWeights() {
             std::vector<std::vector<float>> ff2 = matMul(ff1, FFWeights[1]);
 
             hidden = matAdd(hidden, ff2);
-            layerNorm(hidden);
 
             // Final projection
             output = matMul(hidden, weights[3]);
@@ -258,13 +258,20 @@ void training::buildWeights() {
                             }
                         }
 
+                        float entropy = 0.0f;
+                        for (int v = 0; v < vocab_size; ++v) {
+                            float p = outputProb[t][v];
+                            if (p > 1e-9f) entropy -= p * log(p);
+                        }
+
                         int actualToken = tokenSequence[t + 1];
 
                         std::cout
                             << "Thread " << threadNum
                             << " | Sequence #" << (i + 1) << "/" << totalSequences
                             << " | Position " << t
-                            << " | Loss " << combinedLoss
+                            << " | Sequence Loss " << combinedLoss
+                            << " | Entropy " << entropy
                             << " | Predicted: " << decode({ predictedToken }, dictionary)
                             << " | Actual: " << decode({ actualToken }, dictionary)
                             << std::endl;
@@ -451,8 +458,10 @@ void training::buildWeights() {
 
                 // Output projection
                 for (int m = 0; m < embedding_dim; ++m)
-                    for (int n = 0; n < vocab_size; ++n)
-                        weights[3][m][n] -= learning_rate * gradW3[m][n];
+                    for (int n = 0; n < vocab_size; ++n) {
+						float out_lr = learning_rate * 0.1f; // Prevent large updates to output layer destabilizing training
+                        weights[3][m][n] -= out_lr * gradW3[m][n];
+                    }
 
 
                 // Embeddings
@@ -522,7 +531,7 @@ void training::buildWeights() {
 
         write3DVector("../weights.txt", weights);
         write2DVector("../embeddings.txt", finalEmbeddings);
-
+        write3DVector("../FFweights.txt", FFWeights);
 
         std::cout << "\nTraining complete!\n";
         keepTraining.store(false);
