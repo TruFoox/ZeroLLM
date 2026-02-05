@@ -153,7 +153,6 @@ void training::buildWeights() {
                 vectorSequence.push_back(v);
             }
 
-            layerNorm(vectorSequence);
 
 
 
@@ -199,6 +198,7 @@ void training::buildWeights() {
             // - We add the attention result (context) to the original input vector.
             // - This "shortcut" helps the model keep the original token info and makes learning easier.
             std::vector<std::vector<float>> hidden = matAdd(context, vectorSequence);
+            layerNorm(hidden);
 
             auto hidden_before_ffn = hidden;
 
@@ -209,6 +209,7 @@ void training::buildWeights() {
             std::vector<std::vector<float>> ff2 = matMul(ff1, FFWeights[1]);
 
             hidden = matAdd(hidden, ff2);
+            layerNorm(hidden);
 
             // Final projection
             output = matMul(hidden, weights[3]);
@@ -311,15 +312,16 @@ void training::buildWeights() {
 
             // Backprop through W_o
             std::vector<std::vector<float>> dHidden = matMul(error, transpose(weights[3]));
+            training::layerNormBackward(hidden, dHidden, dHidden);
+
             for (int t = 0; t < sequenceLength; ++t)
                 for (int d = 0; d < embedding_dim; ++d)
                     gradEmbeddings[t][d] += dHidden[t][d];
 
-
             // Split residual
             std::vector<std::vector<float>> dContext = dHidden; // context path
             std::vector<std::vector<float>> dHidden_ff = dHidden;  // FFN
-
+            training::layerNormBackward(hidden_before_ffn, dContext, dContext);
 
             /* FFN Backward Pass*/
 
@@ -390,12 +392,6 @@ void training::buildWeights() {
                     }
                 }
             }
-
-
-            float scale = 1.0f / sqrtf((float)embedding_dim);
-            for (int m = 0; m < sequenceLength; ++m)
-                for (int n = 0; n < sequenceLength; ++n)
-                    dAttention[m][n] *= scale;
 
             std::vector<std::vector<float>> dQ = matMul(dAttention, K);
             std::vector<std::vector<float>> dK = matMul(transpose(dAttention), Q);
@@ -967,5 +963,45 @@ void training::layerNorm(std::vector<std::vector<float>>& x, float eps) {
 
         for (float& v : row)
             v = (v - mean) * invStd;
+    }
+}
+
+void training::layerNormBackward(const std::vector<std::vector<float>>& y, const std::vector<std::vector<float>>& dy, std::vector<std::vector<float>>& dx) {
+    int T = y.size();
+    int D = y[0].size();
+
+    const float eps = 1e-5f;
+
+    for (int t = 0; t < T; ++t) {
+        float mean = 0.0f;
+        for (int d = 0; d < D; ++d)
+            mean += y[t][d];
+        mean /= D;
+
+        float var = 0.0f;
+        for (int d = 0; d < D; ++d) {
+            float x = y[t][d] - mean;
+            var += x * x;
+        }
+        var /= D;
+
+        float inv_std = 1.0f / std::sqrt(var + eps);
+
+        float sum_dy = 0.0f;
+        float sum_dy_xmu = 0.0f;
+
+        for (int d = 0; d < D; ++d) {
+            sum_dy += dy[t][d];
+            sum_dy_xmu += dy[t][d] * (y[t][d] - mean);
+        }
+
+        for (int d = 0; d < D; ++d) {
+            dx[t][d] =
+                inv_std * (
+                    dy[t][d]
+                    - sum_dy / D
+                    - (y[t][d] - mean) * sum_dy_xmu / (D * (var + eps))
+                    );
+        }
     }
 }

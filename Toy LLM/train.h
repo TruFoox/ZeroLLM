@@ -35,6 +35,8 @@ public:
 
     void layerNorm(std::vector<std::vector<float>>& x, float eps = 1e-5f);
 
+    void layerNormBackward(const std::vector<std::vector<float>>& y, const std::vector<std::vector<float>>& dy, std::vector<std::vector<float>>& dx);
+
     void clip(std::vector<std::vector<float>>& grad, float threshold);
 
     /* Write new word to dictionary */
