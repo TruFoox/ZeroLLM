@@ -33,6 +33,12 @@ inline float relu(float x) {
     return (x > 0) ? x : 0;
 }
 
+inline void relu(std::vector<std::vector<float>>& mat) {
+    for (auto& row : mat)
+        for (auto& val : row)
+            val = relu(val); 
+}
+
 inline float dotProduct(const std::vector<float>& a, const std::vector<float>& b) {
     float result = 0.0f;
     for (size_t i = 0; i < a.size(); ++i) {

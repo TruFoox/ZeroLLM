@@ -158,9 +158,6 @@ void training::buildWeights() {
             /* Forward pass */
             std::vector<std::vector<float>> Q, K, V;
 
-			// Normalize input vectors
-            for (auto& v : vectorSequence)
-                normalizeVector(v);
 
             Q = matMul(vectorSequence, weights[0]);
             K = matMul(vectorSequence, weights[1]);
@@ -214,11 +211,9 @@ void training::buildWeights() {
 
             // Feed Forward
 
-            std::vector<std::vector<float>> ff1 =
-                matMul(hidden, W_ff1);
+            std::vector<std::vector<float>> ff1 = matMul(hidden, FFWeights[0]);
             relu(ff1);
-            std::vector<std::vector<float>> ff2 =
-                matMul(ff1, W_ff2);
+            std::vector<std::vector<float>> ff2 = matMul(ff1, FFWeights[1]);
 
             hidden = matAdd(hidden, ff2);
 
@@ -315,14 +310,36 @@ void training::buildWeights() {
             // Backprop through W_o
             std::vector<std::vector<float>> dHidden = matMul(error, transpose(weights[3]));
 
+
             // Split residual
             std::vector<std::vector<float>> dContext = dHidden; // context path
+            std::vector<std::vector<float>> dHidden_ff = dHidden;  // FFN
 
-            // Immediately push residual grad to embeddings
+
+            /* FFN Backward Pass*/
+
+            auto gradW_ff2 = matMul(transpose(ff1), dHidden_ff);
+            training::clip(gradW_ff2, 5.0f);
+
+            // Backprop through FF2
+            auto dFF1 = matMul(dHidden_ff, transpose(FFWeights[1]));
+
+            for (int t = 0; t < sequenceLength; ++t)
+                for (int d = 0; d < dFF1[0].size(); ++d)
+                    if (ff1[t][d] <= 0.0f)
+                        dFF1[t][d] = 0.0f;
+
+            // Grad for FF1
+            auto gradW_ff1 = matMul(transpose(hidden), dFF1);
+            training::clip(gradW_ff1, 5.0f);
+
+            // Backprop to hidden
+            auto dHidden_from_ff = matMul(dFF1, transpose(FFWeights[0]));
+
+            // Merge FFN gradient into dContext before attention
             for (int t = 0; t < sequenceLength; ++t)
                 for (int d = 0; d < embedding_dim; ++d)
-                    gradEmbeddings[t][d] += dHidden[t][d];
-
+                    dContext[t][d] += dHidden_from_ff[t][d];
 
             // Values (V) contribution:
             // - gradWV is how much the V projection matrix should change for this sequence.
@@ -425,6 +442,14 @@ void training::buildWeights() {
                         weights[2][m][n] -= learning_rate * gradWV[m][n];
                     }
                 }
+
+                // FFN weights
+                for (int m = 0; m < FFWeights[0].size(); ++m)
+                    for (int n = 0; n < FFWeights[0][0].size(); ++n)
+                        FFWeights[0][m][n] -= learning_rate * gradW_ff1[m][n];
+                for (int m = 0; m < FFWeights[1].size(); ++m)
+                    for (int n = 0; n < FFWeights[1][0].size(); ++n)
+                        FFWeights[1][m][n] -= learning_rate * gradW_ff2[m][n];
 
                 // Output projection
                 for (int m = 0; m < embedding_dim; ++m)
@@ -913,13 +938,4 @@ std::unordered_map<std::string, int> training::read_dict() {
     if (j.is_null() || !j.is_object() || j.empty()) {return {};}
 
     return j.get<std::unordered_map<std::string, int>>();
-}
-
-void training::normalizeVector(std::vector<float>& v) {
-    float norm = 0.0f;
-    for (float x : v) norm += x * x;
-    norm = std::sqrt(norm) + 1e-6f;
-
-    for (float& x : v)
-        x /= norm;
 }
