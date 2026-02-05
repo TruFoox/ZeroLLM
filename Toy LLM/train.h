@@ -24,6 +24,9 @@ public:
     /* Generate positional encodings for the dictionary */
     std::vector<std::vector<float>> generatePE(int max_seq_len, int embedding_dim);
 
+	/* Generate feedforward weights */
+    std::vector<std::vector<std::vector<float>>> generateFFWeights(const int embedding_dim);
+
     /* Generate weight matrices */
     std::vector<std::vector<std::vector<float>>> generateWeights(const int embedding_dim, const int vocab_size);
 

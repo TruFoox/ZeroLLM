@@ -56,7 +56,7 @@ void training::buildWeights() {
     int vocab_size = static_cast<int>(dictionary.size());
 
     std::vector<std::vector<float>> finalEmbeddings;
-    std::vector<std::vector<std::vector<float>>> weights;
+    std::vector<std::vector<std::vector<float>>> weights, FFWeights;
 
     if (input == 'y' || input == 'Y') {
         // Generate embeddings and positional encodings
@@ -71,47 +71,22 @@ void training::buildWeights() {
         weights = generateWeights(embedding_dim, vocab_size);
         write3DVector("../weights.txt", weights);
 
+		std::cout << "Generating Feed-Forward Weights...\n";
+		FFWeights = generateFFWeights(embedding_dim);
+        write3DVector("../FFweights.txt", FFWeights);
+
         intput = 0;
     }
     else {
         // Load existing embeddings and weights
         std::cout << "Loading existing embeddings and weights...\n";
+
         finalEmbeddings = read2DVector("../embeddings.txt", embedding_dim);
         weights = read3DVector("../weights.txt", embedding_dim);
+        FFWeights = read3DVector("../FFweights.txt", embedding_dim);
 
         if (finalEmbeddings.empty() || weights.empty())
             throw std::runtime_error("No existing embeddings or weights found. Please build first!");
-
-        // Ensure correct shapes for weight matrices:
-        // - WQ, WK, WV should be square: [embedding_dim x embedding_dim].
-        // - WO (output) should be [embedding_dim x vocab_size].
-		// If a loaded file has the wrong shape we replace it with zeros so dimensions match math below. That being said, this will break training so if this is needed something is very wrong.
-        if (weights.size() < 4) {
-            std::cout << "Fixing incomplete weights...\n";
-            weights.resize(4,
-                std::vector<std::vector<float>>(embedding_dim,
-                    std::vector<float>(embedding_dim, 0.0f)));
-            weights[3] =
-                std::vector<std::vector<float>>(embedding_dim,
-                    std::vector<float>(vocab_size, 0.0f));
-        }
-        else {
-            for (size_t w = 0; w < weights.size(); ++w) {
-                if (weights[w].empty()) continue;
-
-                // Q, K, V
-                if (w < 3 && weights[w][0].size() != embedding_dim)
-                    weights[w] =
-                    std::vector<std::vector<float>>(embedding_dim,
-                        std::vector<float>(embedding_dim, 0.0f));
-
-                // WO
-                else if (w == 3 && weights[w][0].size() != vocab_size)
-                    weights[w] =
-                    std::vector<std::vector<float>>(embedding_dim,
-                        std::vector<float>(vocab_size, 0.0f));
-            }
-        }
 
         std::cout << "Input previous sequence number: ";
         std::cin >> intput;
@@ -236,6 +211,16 @@ void training::buildWeights() {
             std::vector<std::vector<float>> hidden =
                 matAdd(context, vectorSequence);
 
+
+            // Feed Forward
+
+            std::vector<std::vector<float>> ff1 =
+                matMul(hidden, W_ff1);
+            relu(ff1);
+            std::vector<std::vector<float>> ff2 =
+                matMul(ff1, W_ff2);
+
+            hidden = matAdd(hidden, ff2);
 
             // Final projection
             output = matMul(hidden, weights[3]);
@@ -608,6 +593,35 @@ std::vector<std::vector<std::vector<float>>> training::generateWeights(const int
     for (int j = 0; j < embedding_dim; ++j)
         for (int k = 0; k < vocab_size; ++k)
             weights[3][j][k] = dis(gen);
+
+    return weights;
+}
+
+std::vector<std::vector<std::vector<float>>> training::generateFFWeights(const int embedding_dim) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dis(
+        -1.0f / sqrt(embedding_dim),
+        1.0f / sqrt(embedding_dim)
+    );
+
+    // weights[0] = W_ff1 (d × 4d)
+    // weights[1] = W_ff2 (4d × d)
+    std::vector<std::vector<std::vector<float>>> weights(2);
+
+    weights[0].resize(embedding_dim,
+        std::vector<float>(embedding_dim * 4));
+
+    for (int i = 0; i < embedding_dim; ++i)
+        for (int j = 0; j < embedding_dim * 4; ++j)
+            weights[0][i][j] = dis(gen);
+
+    weights[1].resize(embedding_dim * 4,
+        std::vector<float>(embedding_dim));
+
+    for (int i = 0; i < embedding_dim * 4; ++i)
+        for (int j = 0; j < embedding_dim; ++j)
+            weights[1][i][j] = dis(gen);
 
     return weights;
 }
