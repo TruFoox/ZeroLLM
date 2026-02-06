@@ -197,8 +197,11 @@ void training::buildWeights() {
             // Residual connection (simple):
             // - We add the attention result (context) to the original input vector.
             // - This "shortcut" helps the model keep the original token info and makes learning easier.
-            std::vector<std::vector<float>> hidden = matAdd(context, vectorSequence);
+            std::vector<std::vector<float>> hidden_pre_ln1 = matAdd(context, vectorSequence);
+            std::vector<std::vector<float>> hidden = hidden_pre_ln1;
             layerNorm(hidden);
+
+
 
             auto hidden_before_ffn = hidden;
 
@@ -208,8 +211,10 @@ void training::buildWeights() {
             relu(ff1);
             std::vector<std::vector<float>> ff2 = matMul(ff1, FFWeights[1]);
 
-            hidden = matAdd(hidden, ff2);
+            std::vector<std::vector<float>> hidden_pre_ln2 = matAdd(hidden, ff2);
+            hidden = hidden_pre_ln2;
             layerNorm(hidden);
+
 
             // Final projection
             output = matMul(hidden, weights[3]);
@@ -312,7 +317,7 @@ void training::buildWeights() {
 
             // Backprop through W_o
             std::vector<std::vector<float>> dHidden = matMul(error, transpose(weights[3]));
-            training::layerNormBackward(hidden, dHidden, dHidden);
+            training::layerNormBackward(hidden_pre_ln1, dHidden, dHidden);
 
             for (int t = 0; t < sequenceLength; ++t)
                 for (int d = 0; d < embedding_dim; ++d)
@@ -321,7 +326,8 @@ void training::buildWeights() {
             // Split residual
             std::vector<std::vector<float>> dContext = dHidden; // context path
             std::vector<std::vector<float>> dHidden_ff = dHidden;  // FFN
-            training::layerNormBackward(hidden_before_ffn, dContext, dContext);
+            training::layerNormBackward(hidden_pre_ln2, dContext, dContext);
+
 
             /* FFN Backward Pass*/
 
@@ -393,8 +399,17 @@ void training::buildWeights() {
                 }
             }
 
+            float scale = 1.0f / sqrtf((float)embedding_dim);
+
             std::vector<std::vector<float>> dQ = matMul(dAttention, K);
             std::vector<std::vector<float>> dK = matMul(transpose(dAttention), Q);
+
+            for (int t = 0; t < sequenceLength; ++t)
+                for (int d = 0; d < embedding_dim; ++d) {
+                    dQ[t][d] *= scale;
+                    dK[t][d] *= scale;
+                }
+
             
 
 
