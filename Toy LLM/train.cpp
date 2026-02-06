@@ -323,12 +323,9 @@ void training::buildWeights() {
                 for (int d = 0; d < embedding_dim; ++d)
                     gradEmbeddings[t][d] += dHidden[t][d];
 
-            std::vector<std::vector<float>> dHidden2 = dHidden;
-            training::layerNormBackward(hidden_pre_ln2, dHidden2, dHidden2);
-
             // Split residual
-            std::vector<std::vector<float>> dContext = dHidden2; // context path
-            std::vector<std::vector<float>> dHidden_ff = dHidden2;  // FFN
+            std::vector<std::vector<float>> dContext = dHidden; // context path
+            std::vector<std::vector<float>> dHidden_ff = dHidden;  // FFN
 
 
             /* FFN Backward Pass*/
