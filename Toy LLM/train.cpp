@@ -41,7 +41,7 @@ void training::buildWeights() {
     int vocab_size = static_cast<int>(dictionary.size());
 
     int embedding_dim = floor(25 * log2(vocab_size)); // Automatic embedding size based on vocab size
-    float learning_rate = 1e-4;au
+    float learning_rate = 1e-4;
 
     // Positional encoding:
     // - Tokens by themselves don't tell the model their position in the sentence.
@@ -317,16 +317,18 @@ void training::buildWeights() {
 
             // Backprop through W_o
             std::vector<std::vector<float>> dHidden = matMul(error, transpose(weights[3]));
-            training::layerNormBackward(hidden_pre_ln1, dHidden, dHidden);
+            training::layerNormBackward(hidden_pre_ln2, dHidden, dHidden);
 
             for (int t = 0; t < sequenceLength; ++t)
                 for (int d = 0; d < embedding_dim; ++d)
                     gradEmbeddings[t][d] += dHidden[t][d];
 
+            std::vector<std::vector<float>> dHidden2 = dHidden;
+            training::layerNormBackward(hidden_pre_ln2, dHidden2, dHidden2);
+
             // Split residual
-            std::vector<std::vector<float>> dContext = dHidden; // context path
-            std::vector<std::vector<float>> dHidden_ff = dHidden;  // FFN
-            training::layerNormBackward(hidden_pre_ln2, dContext, dContext);
+            std::vector<std::vector<float>> dContext = dHidden2; // context path
+            std::vector<std::vector<float>> dHidden_ff = dHidden2;  // FFN
 
 
             /* FFN Backward Pass*/
@@ -353,6 +355,7 @@ void training::buildWeights() {
             for (int t = 0; t < sequenceLength; ++t)
                 for (int d = 0; d < embedding_dim; ++d)
                     dContext[t][d] += dHidden_from_ff[t][d];
+            training::layerNormBackward(hidden_pre_ln1, dContext, dContext);
 
             // Values (V) contribution:
             // - gradWV is how much the V projection matrix should change for this sequence.
