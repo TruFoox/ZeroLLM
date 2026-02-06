@@ -1,4 +1,4 @@
-# From-Scratch Transformer (C++)
+# ZeroLLM (C++ Transformer, No libraries)
 
 A small (~900 lines in train.cpp) Transformer-style language model implemented **entirely from scratch in C++**, using no external LLM libraries.
 
@@ -72,3 +72,4 @@ That behavior is normal for a model this small.
 ## License
 
 Use it, break it, learn from it - I know I did!
+
