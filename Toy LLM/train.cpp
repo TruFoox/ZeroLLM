@@ -981,10 +981,9 @@ void training::layerNorm(std::vector<std::vector<float>>& x, float eps) {
     }
 }
 
-void training::layerNormBackward(const std::vector<std::vector<float>>& y, const std::vector<std::vector<float>>& dy, std::vector<std::vector<float>>& dx) {
+void training::layerNormBackward(const std::vector<std::vector<float>>& y, const std::vector<std::vector<float>>& dy,std::vector<std::vector<float>>& dx) {
     int T = y.size();
     int D = y[0].size();
-
     const float eps = 1e-5f;
 
     for (int t = 0; t < T; ++t) {
@@ -995,27 +994,29 @@ void training::layerNormBackward(const std::vector<std::vector<float>>& y, const
 
         float var = 0.0f;
         for (int d = 0; d < D; ++d) {
-            float x = y[t][d] - mean;
-            var += x * x;
+            float xm = y[t][d] - mean;
+            var += xm * xm;
         }
         var /= D;
 
         float inv_std = 1.0f / std::sqrt(var + eps);
 
         float sum_dy = 0.0f;
-        float sum_dy_xmu = 0.0f;
+        float sum_dy_xm = 0.0f;
 
         for (int d = 0; d < D; ++d) {
+            float xm = y[t][d] - mean;
             sum_dy += dy[t][d];
-            sum_dy_xmu += dy[t][d] * (y[t][d] - mean);
+            sum_dy_xm += dy[t][d] * xm;
         }
 
         for (int d = 0; d < D; ++d) {
+            float xm = y[t][d] - mean;
             dx[t][d] =
                 inv_std * (
                     dy[t][d]
                     - sum_dy / D
-                    - (y[t][d] - mean) * sum_dy_xmu / (D * (var + eps))
+                    - xm * sum_dy_xm / (D * (var + eps))
                     );
         }
     }
