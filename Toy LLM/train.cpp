@@ -31,9 +31,17 @@ std::atomic<bool> useConsole{ true };
 void training::buildWeights() {
     keepTraining.store(true);
     sequencesProcessed.store(0);
+    
+    // Load dictionary
+    std::unordered_map<std::string, int> dictionary = read_dict();
 
-    int embedding_dim = 256;
-    float learning_rate = 1e-4;
+    if (dictionary.empty())
+        throw std::runtime_error("Dictionary is empty — build it first from training data!");
+
+    int vocab_size = static_cast<int>(dictionary.size());
+
+    int embedding_dim = floor(25 * log2(vocab_size)); // Automatic embedding size based on vocab size
+    float learning_rate = 1e-4;au
 
     // Positional encoding:
     // - Tokens by themselves don't tell the model their position in the sentence.
@@ -47,13 +55,6 @@ void training::buildWeights() {
     std::cout << "Build new model weights? (y/n): ";
     std::cin >> input;
 
-    // Load dictionary
-    std::unordered_map<std::string, int> dictionary = read_dict();
-
-    if (dictionary.empty())
-        throw std::runtime_error("Dictionary is empty — build it first from training data!");
-
-    int vocab_size = static_cast<int>(dictionary.size());
 
     std::vector<std::vector<float>> finalEmbeddings;
     std::vector<std::vector<std::vector<float>>> weights, FFWeights;
@@ -238,15 +239,14 @@ void training::buildWeights() {
                 sequenceLength,
                 std::vector<float>(embedding_dim, 0.0f)
             );
-
-            float combinedLoss = 0.0f;
-            for (int t = 0; t + 1 < sequenceLength; ++t)
-                combinedLoss += -log(outputProb[t][tokenSequence[t + 1]] + 1e-9f);
-
-            combinedLoss /= (sequenceLength - 1);
+            if (useConsole) {
+                float combinedLoss = 0.0f;
+                for (int t = 0; t + 1 < sequenceLength; ++t)
+                    combinedLoss += -log(outputProb[t][tokenSequence[t + 1]] + 1e-9f);
 
 
-			if (useConsole) {
+                combinedLoss /= (sequenceLength - 1);
+
                 {
                     std::lock_guard<std::mutex> lock(printMutex);
 
@@ -274,7 +274,7 @@ void training::buildWeights() {
 
                         std::cout
                             << "Thread " << threadNum
-                            << " | Sequence #" << (i + 1) << "/" << totalSequences
+                            << " | #" << (i + 1) << "/" << totalSequences
                             << " | Position " << t
                             << " | Sequence Loss " << combinedLoss
                             << " | Entropy " << entropy
