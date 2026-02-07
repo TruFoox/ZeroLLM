@@ -40,6 +40,7 @@ void training::buildWeights() {
 
     int vocab_size = static_cast<int>(dictionary.size());
 
+    std::vector<float> tokenLossWeight(vocab_size, 1.0f);
     int embedding_dim = floor(25 * log2(vocab_size)); // Automatic embedding size based on vocab size
     float learning_rate = 2e-4;
 
@@ -76,6 +77,21 @@ void training::buildWeights() {
 		FFWeights = generateFFWeights(embedding_dim);
         write3DVector("../FFweights.txt", FFWeights);
 
+        // Generate weights for tokens to prevent common tokens being over-represented
+        std::cout << "Weighing tokens...\n";
+
+        // Hard downweight for space
+        auto itSpace = dictionary.find(" ");
+        if (itSpace != dictionary.end())
+            tokenLossWeight[itSpace->second] = 0.05f;
+
+        // Downweight ultra-common punctuation
+        for (const std::string& s : { ".", ",", "'","-", "\n", "!", "?" }) {
+            auto it = dictionary.find(s);
+            if (it != dictionary.end())
+                tokenLossWeight[it->second] = 0.2f;
+        }
+
         intput = 0;
     }
     else {
@@ -99,8 +115,7 @@ void training::buildWeights() {
     if (!file.is_open()) throw std::runtime_error("Error opening file");
 
     std::string data((std::istreambuf_iterator<char>(file)),
-        std::istreambuf_iterator<char>());
-
+    std::istreambuf_iterator<char>());
     std::vector<int> sequence = makeSequence(data, dictionary);
     int totalSequences = (sequence.size() + 127) / 128; // ceil division
 
@@ -244,7 +259,8 @@ void training::buildWeights() {
                 for (int t = 0; t + 1 < sequenceLength; ++t) {
                     int tgt = tokenSequence[t + 1];
                     if (tgt <= 0 || tgt >= vocab_size) continue;
-                    combinedLoss += -log(outputProb[t][tgt] + 1e-9f);
+                    combinedLoss += tokenLossWeight[tgt] * (-log(outputProb[t][tgt] + 1e-9f));
+
                 }
 
 
@@ -308,11 +324,15 @@ void training::buildWeights() {
                     int tgt = tokenSequence[m + 1];
                     if (tgt <= 0 || tgt >= vocab_size) continue;
 
-                    error[m][n] = outputProb[m][n] - (n == tgt ? 1.0f : 0.0f);
+                    float w = tokenLossWeight[tgt];
+                    error[m][n] = w * (outputProb[m][n] - (n == tgt ? 1.0f : 0.0f));
+
                 }
 
 
             std::fill(error.back().begin(), error.back().end(), 0.0f);
+            std::fill(gradEmbeddings.back().begin(), gradEmbeddings.back().end(), 0.0f);
+
 
             // Gradient clipping and accumulation:
             // - We clip gradients to a small range (e.g. [-5,5]) so a single batch doesn't blow up weights.
@@ -325,7 +345,9 @@ void training::buildWeights() {
 
             // Backprop through W_o
             std::vector<std::vector<float>> dHidden = matMul(error, transpose(weights[3]));
-            training::layerNormBackward(hidden_pre_ln2, dHidden, dHidden);
+            std::vector<std::vector<float>> dHidden_ln = dHidden;
+            layerNormBackward(hidden_pre_ln2, dHidden_ln, dHidden);
+
 
             for (int t = 0; t < sequenceLength; ++t)
                 for (int d = 0; d < embedding_dim; ++d)
@@ -360,7 +382,11 @@ void training::buildWeights() {
             for (int t = 0; t < sequenceLength; ++t)
                 for (int d = 0; d < embedding_dim; ++d)
                     dContext[t][d] += dHidden_from_ff[t][d];
-            training::layerNormBackward(hidden_pre_ln1, dContext, dContext);
+
+
+            std::vector<std::vector<float>> dContext_ln1 = dContext;
+            training::layerNormBackward(hidden_pre_ln1, dContext_ln1, dContext);
+
 
             // Values (V) contribution:
             // - gradWV is how much the V projection matrix should change for this sequence.
@@ -409,14 +435,14 @@ void training::buildWeights() {
 
             float scale = 1.0f / sqrtf((float)embedding_dim);
 
+            // Apply scale BEFORE Q/K matmuls
+            for (int m = 0; m < sequenceLength; ++m)
+                for (int n = 0; n < sequenceLength; ++n)
+                    dAttention[m][n] *= scale;
+
             std::vector<std::vector<float>> dQ = matMul(dAttention, K);
             std::vector<std::vector<float>> dK = matMul(transpose(dAttention), Q);
 
-            for (int t = 0; t < sequenceLength; ++t)
-                for (int d = 0; d < embedding_dim; ++d) {
-                    dQ[t][d] *= scale;
-                    dK[t][d] *= scale;
-                }
 
             
 
