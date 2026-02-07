@@ -241,8 +241,11 @@ void training::buildWeights() {
             );
             if (useConsole) {
                 float combinedLoss = 0.0f;
-                for (int t = 0; t + 1 < sequenceLength; ++t)
-                    combinedLoss += -log(outputProb[t][tokenSequence[t + 1]] + 1e-9f);
+                for (int t = 0; t + 1 < sequenceLength; ++t) {
+                    int tgt = tokenSequence[t + 1];
+                    if (tgt <= 0 || tgt >= vocab_size) continue;
+                    combinedLoss += -log(outputProb[t][tgt] + 1e-9f);
+                }
 
 
                 combinedLoss /= (sequenceLength - 1);
@@ -265,11 +268,13 @@ void training::buildWeights() {
                         }
 
                         float entropy = 0.0f;
-                        for (int v = 0; v < vocab_size; ++v) 
+                        for (int v = 0; v < vocab_size; ++v) {
                             float p = outputProb[t][v];
-                            if (p > 1e-9f) entropy -= p * log2(p);
+                            if (p > 1e-9f)
+                                entropy -= p * log2(p);
                         }
-                        entropy = pow(entropy, 2); // Convert entropy to actual number of options
+
+                        float choices = std::pow(2.0f, entropy); // Convert entropy to actual number of options
 
                         int actualToken = tokenSequence[t + 1];
 
@@ -278,7 +283,7 @@ void training::buildWeights() {
                             << " | #" << (i + 1) << "/" << totalSequences
                             << " | Position " << t
                             << " | Sequence Loss " << combinedLoss
-                            << " | Entropy " << entropy
+                            << " | Confidence " << choices
                             << " | Predicted: " << decode({ predictedToken }, dictionary)
                             << " | Actual: " << decode({ actualToken }, dictionary)
                             << std::endl;
@@ -299,10 +304,12 @@ void training::buildWeights() {
             // Compute error
             std::vector<std::vector<float>> error(sequenceLength, std::vector<float>(vocab_size, 0.0f));
             for (int m = 0; m + 1 < sequenceLength; ++m)
-                for (int n = 0; n < vocab_size; ++n)
-                    error[m][n] =
-                    (outputProb[m][n] - (n == tokenSequence[m + 1] ? 1.0f : 0.0f));
+                for (int n = 0; n < vocab_size; ++n) {
+                    int tgt = tokenSequence[m + 1];
+                    if (tgt <= 0 || tgt >= vocab_size) continue;
 
+                    error[m][n] = outputProb[m][n] - (n == tgt ? 1.0f : 0.0f);
+                }
 
 
             std::fill(error.back().begin(), error.back().end(), 0.0f);
