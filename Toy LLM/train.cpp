@@ -41,7 +41,7 @@ void training::buildWeights() {
     int vocab_size = static_cast<int>(dictionary.size());
 
     int embedding_dim = floor(25 * log2(vocab_size)); // Automatic embedding size based on vocab size
-    float learning_rate = 1e-4;
+    float learning_rate = 2e-4;
 
     // Positional encoding:
     // - Tokens by themselves don't tell the model their position in the sentence.
@@ -265,10 +265,11 @@ void training::buildWeights() {
                         }
 
                         float entropy = 0.0f;
-                        for (int v = 0; v < vocab_size; ++v) {
+                        for (int v = 0; v < vocab_size; ++v) 
                             float p = outputProb[t][v];
-                            if (p > 1e-9f) entropy -= p * log(p);
+                            if (p > 1e-9f) entropy -= p * log2(p);
                         }
+                        entropy = pow(entropy, 2); // Convert entropy to actual number of options
 
                         int actualToken = tokenSequence[t + 1];
 
