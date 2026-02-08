@@ -361,8 +361,15 @@ void training::buildWeights() {
 
             // Backprop through W_o
             std::vector<std::vector<float>> dHidden = matMul(error, transpose(weights[3]));
-            std::vector<std::vector<float>> dHidden_ln = dHidden;
-            layerNormBackward(hidden_pre_ln2, dHidden_ln, dHidden);
+            std::vector<std::vector<float>> dHidden_ln2(hidden.size(), std::vector<float>(hidden[0].size()));
+
+            layerNormBackward(hidden_pre_ln2, dHidden, dHidden_ln2);
+            for (int t = 0; t < hidden.size(); t++) {
+                for (int d = 0; d < hidden[0].size(); d++) {
+                    dHidden[t][d] += dHidden_ln2[t][d];  // sum residual + LN
+                }
+            }
+
 
 
             for (int t = 0; t < sequenceLength; ++t)
@@ -400,8 +407,16 @@ void training::buildWeights() {
                     dContext[t][d] += dHidden_from_ff[t][d];
 
 
-            std::vector<std::vector<float>> dContext_ln1 = dContext;
-            training::layerNormBackward(hidden_pre_ln1, dContext_ln1, dContext);
+            std::vector<std::vector<float>> dContext_ln1(hidden.size(), std::vector<float>(hidden[0].size()));
+            training::layerNormBackward(hidden_pre_ln1, dContext, dContext_ln1);
+
+            // Sum residual + LN gradient
+            for (int t = 0; t < hidden.size(); t++) {
+                for (int d = 0; d < hidden[0].size(); d++) {
+                    dContext[t][d] += dContext_ln1[t][d];
+                }
+            }
+
 
 
             // Values (V) contribution:
