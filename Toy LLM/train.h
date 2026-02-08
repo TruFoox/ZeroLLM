@@ -52,4 +52,7 @@ public:
     /* Dictionary read/write */
     void write_dict(const std::unordered_map<std::string, int>& dict);
     std::unordered_map<std::string, int> read_dict();
+
+	// Token sampling with temperature
+    int sampleToken(const std::vector<float>& probs, float temperature);
 };

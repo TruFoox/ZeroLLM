@@ -271,17 +271,23 @@ void training::buildWeights() {
 
                     for (int t = 0; t < sequenceLength - 1; ++t) {
 
-                        int predictedToken = -1;
-                        float bestProb = -1.0f;
+                        // Calculate predicted token using temperature sampling
+                        constexpr float TEMPERATURE = 0.8f;
 
-                        // Calculate predicted token
+                        int predictedToken = -1;
+
+                        // Copy probs so we can zero out forbidden tokens
+                        std::vector<float> probs(vocab_size);
                         for (int v = 0; v < vocab_size; ++v) {
-                            if (v == 0) continue; // forbid UNK
-                            if (outputProb[t][v] > bestProb) {
-                                bestProb = outputProb[t][v];
-                                predictedToken = v;
-                            }
+                            probs[v] = outputProb[t][v];
                         }
+
+                        // forbid UNK
+                        probs[0] = 0.0f;
+
+                        // sample
+                        predictedToken = sampleToken(probs, TEMPERATURE);
+
 
                         float entropy = 0.0f;
                         for (int v = 0; v < vocab_size; ++v) {
@@ -325,7 +331,17 @@ void training::buildWeights() {
                     if (tgt <= 0 || tgt >= vocab_size) continue;
 
                     float w = tokenLossWeight[tgt];
+
+                    // repetition penalty for space
+                    if (tgt == 1 && m > 0 && tokenSequence[m] == tgt) {
+                        w *= 0.1f; // Second space
+                    }
+                    if (tgt == 1 && m > 1 && tokenSequence[m] == tgt && tokenSequence[m - 1] == tgt) {
+						w *= 0.01f; // Third space in a row gets heavily penalized to prevent runs of spaces
+                    }
+
                     error[m][n] = w * (outputProb[m][n] - (n == tgt ? 1.0f : 0.0f));
+
 
                 }
 
@@ -747,6 +763,7 @@ std::vector<int> training::makeSequence(const std::string& data, const std::unor
     }
 
     /* Tokenization */
+            static bool lastWasSpace = false;
     for (int i = 0; i < dataLower.size(); ++i) {
         char currentChar = dataLower[i];
 
@@ -769,17 +786,29 @@ std::vector<int> training::makeSequence(const std::string& data, const std::unor
         if (isDelimiter) {
             if (!currentWord.empty()) {
                 int id = encode(currentWord, dictionary);
-                tokenizedString.push_back(id >= 0 ? id : unkId); // replace -1 with <UNK>
+                tokenizedString.push_back(id >= 0 ? id : unkId);
                 currentWord.clear();
+                lastWasSpace = false;
             }
 
-
-            int id = encode(std::string(1, currentChar), dictionary);
-            tokenizedString.push_back(id >= 0 ? id : unkId); // replace -1 with <UNK>
+            if (currentChar == ' ') {
+                if (!lastWasSpace) {
+                    int id = encode(" ", dictionary);
+                    tokenizedString.push_back(id >= 0 ? id : unkId);
+                    lastWasSpace = true;
+                }
+            }
+            else {
+                int id = encode(std::string(1, currentChar), dictionary);
+                tokenizedString.push_back(id >= 0 ? id : unkId);
+                lastWasSpace = false;
+            }
         }
         else {
             currentWord += currentChar;
+            lastWasSpace = false;
         }
+
     }
 
     if (!currentWord.empty()) {
@@ -1054,4 +1083,29 @@ void training::layerNormBackward(const std::vector<std::vector<float>>& y, const
                     );
         }
     }
+}
+
+int training::sampleToken(const std::vector<float>& probs, float temperature) {
+    static std::mt19937 gen(std::random_device{}());
+
+    std::vector<float> adjusted(probs.size());
+    float sum = 0.0f;
+
+    for (size_t i = 0; i < probs.size(); ++i) {
+        adjusted[i] = std::pow(probs[i], 1.0f / temperature);
+        sum += adjusted[i];
+    }
+
+    std::uniform_real_distribution<float> dis(0.0f, sum);
+
+    float r = dis(gen);
+    float accum = 0.0f;
+
+    for (size_t i = 0; i < adjusted.size(); ++i) {
+        accum += adjusted[i];
+        if (r <= accum)
+            return static_cast<int>(i);
+    }
+
+    return static_cast<int>(adjusted.size() - 1);
 }
