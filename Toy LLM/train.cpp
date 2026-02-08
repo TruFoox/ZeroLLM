@@ -19,19 +19,21 @@
 
 using json = nlohmann::json;
 
-std::mutex updateMutex; // protects shared weights/embeddings
+std::mutex saveMutex; // protects shared weights/embeddings
 std::mutex printMutex; // Stops jumbled console output
 
 std::atomic<int> sequencesProcessed;
 std::atomic<bool> keepTraining{ true };
 std::atomic<bool> useConsole{ true };
+std::atomic<int> completedSequences{ 0 };
+int lastAutosave = 0;
 
 /* There are a lot of comments because this is a personal learning project
    - This model is per-sequence SGD*/
 void training::buildWeights() {
     keepTraining.store(true);
     sequencesProcessed.store(0);
-    
+
     // Load dictionary
     std::unordered_map<std::string, int> dictionary = read_dict();
 
@@ -73,8 +75,8 @@ void training::buildWeights() {
         weights = generateWeights(embedding_dim, vocab_size);
         write3DVector("../weights.txt", weights);
 
-		std::cout << "Generating Feed-Forward Weights...\n";
-		FFWeights = generateFFWeights(embedding_dim);
+        std::cout << "Generating Feed-Forward Weights...\n";
+        FFWeights = generateFFWeights(embedding_dim);
         write3DVector("../FFweights.txt", FFWeights);
 
         // Generate weights for tokens to prevent common tokens being over-represented
@@ -115,7 +117,7 @@ void training::buildWeights() {
     if (!file.is_open()) throw std::runtime_error("Error opening file");
 
     std::string data((std::istreambuf_iterator<char>(file)),
-    std::istreambuf_iterator<char>());
+        std::istreambuf_iterator<char>());
     std::vector<int> sequence = makeSequence(data, dictionary);
     int totalSequences = (sequence.size() + 127) / 128; // ceil division
 
@@ -131,6 +133,7 @@ void training::buildWeights() {
         std::vector<std::vector<float>> output;
 
         for (int i = intput + threadNum; i < totalSequences; i += numThreads) {
+            int validCount = 0;
 
             // Zero per-sequence gradients
             for (auto& r : gradWQ) std::fill(r.begin(), r.end(), 0.0f);
@@ -162,7 +165,7 @@ void training::buildWeights() {
                 embeddingOnly.push_back(emb);
 
                 std::vector<float> v = emb;
-				// Add positional encoding
+                // Add positional encoding
                 for (int d = 0; d < embedding_dim; ++d)
                     v[d] += pe[t][d];
 
@@ -179,7 +182,7 @@ void training::buildWeights() {
             Q = matMul(vectorSequence, weights[0]);
             K = matMul(vectorSequence, weights[1]);
             V = matMul(vectorSequence, weights[2]);
- 
+
 
 
             // Attention logits and scaling:
@@ -257,14 +260,19 @@ void training::buildWeights() {
             if (useConsole) {
                 float combinedLoss = 0.0f;
                 for (int t = 0; t + 1 < sequenceLength; ++t) {
-                    int tgt = tokenSequence[t + 1];
-                    if (tgt <= 0 || tgt >= vocab_size) continue;
-                    combinedLoss += tokenLossWeight[tgt] * (-log(outputProb[t][tgt] + 1e-9f));
+                    int target = tokenSequence[t + 1];
+                    if (target < 0 || target >= vocab_size) continue;
+
+                    combinedLoss += tokenLossWeight[target] *
+                        (-log(outputProb[t][target] + 1e-9f));
+                    validCount++;
+
 
                 }
 
 
-                combinedLoss /= (sequenceLength - 1);
+                combinedLoss /= std::max(1, validCount);
+
 
                 {
                     std::lock_guard<std::mutex> lock(printMutex);
@@ -287,7 +295,6 @@ void training::buildWeights() {
 
                         // sample
                         predictedToken = sampleToken(probs, TEMPERATURE);
-
 
                         float entropy = 0.0f;
                         for (int v = 0; v < vocab_size; ++v) {
@@ -325,25 +332,20 @@ void training::buildWeights() {
 
             // Compute error
             std::vector<std::vector<float>> error(sequenceLength, std::vector<float>(vocab_size, 0.0f));
-            for (int m = 0; m + 1 < sequenceLength; ++m)
+            for (int m = 0; m + 1 < sequenceLength; ++m) {
+                int target = tokenSequence[m + 1];
+                if (target < 0 || target >= vocab_size) continue;
+
+                float w = tokenLossWeight[target];
+
                 for (int n = 0; n < vocab_size; ++n) {
-                    int tgt = tokenSequence[m + 1];
-                    if (tgt <= 0 || tgt >= vocab_size) continue;
-
-                    float w = tokenLossWeight[tgt];
-
-                    // repetition penalty for space
-                    if (tgt == 1 && m > 0 && tokenSequence[m] == tgt) {
-                        w *= 0.1f; // Second space
-                    }
-                    if (tgt == 1 && m > 1 && tokenSequence[m] == tgt && tokenSequence[m - 1] == tgt) {
-						w *= 0.01f; // Third space in a row gets heavily penalized to prevent runs of spaces
-                    }
-
-                    error[m][n] = w * (outputProb[m][n] - (n == tgt ? 1.0f : 0.0f));
-
-
+                    float grad = outputProb[m][n];
+                    if (n == target) grad -= 1.0f;
+                    error[m][n] = grad * w;
                 }
+
+            }
+                
 
 
             std::fill(error.back().begin(), error.back().end(), 0.0f);
@@ -355,21 +357,14 @@ void training::buildWeights() {
             // - Per-thread gradients are then added into the global accumulators under a mutex.
             // - After all threads finish we take an SGD step: weights -= learning_rate * accumulated_gradients.
             gradW3 = matMul(transpose(hidden), error);
-            training::clip(gradW3, 5.0f);
+            training::clip(gradW3, 0.5f);
 
 
 
             // Backprop through W_o
             std::vector<std::vector<float>> dHidden = matMul(error, transpose(weights[3]));
-            std::vector<std::vector<float>> dHidden_ln2(hidden.size(), std::vector<float>(hidden[0].size()));
-
-            layerNormBackward(hidden_pre_ln2, dHidden, dHidden_ln2);
-            for (int t = 0; t < hidden.size(); t++) {
-                for (int d = 0; d < hidden[0].size(); d++) {
-                    dHidden[t][d] += dHidden_ln2[t][d];  // sum residual + LN
-                }
-            }
-
+            std::vector<std::vector<float>> dHidden_ln = dHidden;
+            layerNormBackward(hidden_pre_ln2, dHidden_ln, dHidden);
 
 
             for (int t = 0; t < sequenceLength; ++t)
@@ -384,7 +379,7 @@ void training::buildWeights() {
             /* FFN Backward Pass*/
 
             auto gradW_ff2 = matMul(transpose(ff1), dHidden_ff);
-            training::clip(gradW_ff2, 5.0f);
+            training::clip(gradW_ff2, 1.0f);
 
             // Backprop through FF2
             auto dFF1 = matMul(dHidden_ff, transpose(FFWeights[1]));
@@ -396,7 +391,15 @@ void training::buildWeights() {
 
             // Grad for FF1
             auto gradW_ff1 = matMul(transpose(hidden_before_ffn), dFF1);
-            training::clip(gradW_ff1, 5.0f);
+            training::clip(gradW_ff1, 1.0f);
+
+            float ffn_scale = 2.0f;
+
+            for (auto& row : gradW_ff1)
+                for (float& v : row) v *= ffn_scale;
+
+            for (auto& row : gradW_ff2)
+                for (float& v : row) v *= ffn_scale;
 
             // Backprop to hidden
             auto dHidden_from_ff = matMul(dFF1, transpose(FFWeights[0]));
@@ -407,16 +410,8 @@ void training::buildWeights() {
                     dContext[t][d] += dHidden_from_ff[t][d];
 
 
-            std::vector<std::vector<float>> dContext_ln1(hidden.size(), std::vector<float>(hidden[0].size()));
-            training::layerNormBackward(hidden_pre_ln1, dContext, dContext_ln1);
-
-            // Sum residual + LN gradient
-            for (int t = 0; t < hidden.size(); t++) {
-                for (int d = 0; d < hidden[0].size(); d++) {
-                    dContext[t][d] += dContext_ln1[t][d];
-                }
-            }
-
+            std::vector<std::vector<float>> dContext_ln1 = dContext;
+            training::layerNormBackward(hidden_pre_ln1, dContext_ln1, dContext);
 
 
             // Values (V) contribution:
@@ -464,25 +459,23 @@ void training::buildWeights() {
                 }
             }
 
-            float scale = 1.0f / sqrtf((float)embedding_dim);
-
-            // Apply scale BEFORE Q/K matmuls
-            for (int m = 0; m < sequenceLength; ++m)
-                for (int n = 0; n < sequenceLength; ++n)
-                    dAttention[m][n] *= scale;
-
             std::vector<std::vector<float>> dQ = matMul(dAttention, K);
             std::vector<std::vector<float>> dK = matMul(transpose(dAttention), Q);
 
 
-            
+            float scale = 1.0f / sqrtf((float)embedding_dim);
 
+            for (auto& row : dQ)
+                for (float& v : row) v *= scale;
+
+            for (auto& row : dK)
+                for (float& v : row) v *= scale;
 
             gradWQ = matMul(transpose(vectorSequence), dQ);
             gradWK = matMul(transpose(vectorSequence), dK);
-            training::clip(gradWQ, 5.0f);
-            training::clip(gradWK, 5.0f);
-            training::clip(gradWV, 5.0f);
+            training::clip(gradWQ, 1.0f);
+            training::clip(gradWK, 1.0f);
+            training::clip(gradWV, 1.0f);
 
 
             std::vector<std::vector<float>> temp;
@@ -497,7 +490,7 @@ void training::buildWeights() {
                     gradEmbeddings[t][d] += temp[t][d];
 
 
-            training::clip(gradEmbeddings, 5.0f);
+            training::clip(gradEmbeddings, 0.25f);
 
 
             std::unordered_map<int, std::vector<float>> tokenGradients;
@@ -512,49 +505,47 @@ void training::buildWeights() {
                     g[d] += gradEmbeddings[t][d];
             }
 
-            {
-                std::lock_guard<std::mutex> lock(updateMutex);
 
-                // Q, K, V
-                for (int m = 0; m < embedding_dim; ++m) {
-                    for (int n = 0; n < embedding_dim; ++n) {
-                        weights[0][m][n] -= learning_rate * gradWQ[m][n];
-                        weights[1][m][n] -= learning_rate * gradWK[m][n];
-                        weights[2][m][n] -= learning_rate * gradWV[m][n];
-                    }
+
+            // Q, K, V
+            for (int m = 0; m < embedding_dim; ++m) {
+                for (int n = 0; n < embedding_dim; ++n) {
+                    weights[0][m][n] -= learning_rate * gradWQ[m][n];
+                    weights[1][m][n] -= learning_rate * gradWK[m][n];
+                    weights[2][m][n] -= learning_rate * gradWV[m][n];
+                }
+            }
+
+            // FFN weights
+            for (int m = 0; m < FFWeights[0].size(); ++m)
+                for (int n = 0; n < FFWeights[0][0].size(); ++n)
+                    FFWeights[0][m][n] -= learning_rate * gradW_ff1[m][n];
+            for (int m = 0; m < FFWeights[1].size(); ++m)
+                for (int n = 0; n < FFWeights[1][0].size(); ++n)
+                    FFWeights[1][m][n] -= learning_rate * gradW_ff2[m][n];
+
+            // Output projection
+            for (int m = 0; m < embedding_dim; ++m)
+                for (int n = 0; n < vocab_size; ++n) {
+                    float out_lr = learning_rate * 0.1f; // Prevent large updates to output layer destabilizing training
+                    weights[3][m][n] -= out_lr * gradW3[m][n];
                 }
 
-                // FFN weights
-                for (int m = 0; m < FFWeights[0].size(); ++m)
-                    for (int n = 0; n < FFWeights[0][0].size(); ++n)
-                        FFWeights[0][m][n] -= learning_rate * gradW_ff1[m][n];
-                for (int m = 0; m < FFWeights[1].size(); ++m)
-                    for (int n = 0; n < FFWeights[1][0].size(); ++n)
-                        FFWeights[1][m][n] -= learning_rate * gradW_ff2[m][n];
 
-                // Output projection
-                for (int m = 0; m < embedding_dim; ++m)
-                    for (int n = 0; n < vocab_size; ++n) {
-						float out_lr = learning_rate * 0.1f; // Prevent large updates to output layer destabilizing training
-                        weights[3][m][n] -= out_lr * gradW3[m][n];
-                    }
+            // Embeddings
+            for (auto& [token, grad] : tokenGradients)
+                for (int d = 0; d < embedding_dim; ++d)
+                    finalEmbeddings[token][d] -= learning_rate * grad[d];
 
 
-                // Embeddings
-                for (auto& [token, grad] : tokenGradients)
-                    for (int d = 0; d < embedding_dim; ++d)
-                        finalEmbeddings[token][d] -= learning_rate * grad[d];
 
+            if (GetAsyncKeyState(VK_PAUSE) & 0x8000) {
+                keepTraining.store(false);
+            }
+            if (!keepTraining.load()) {
+                continue; // finish this step, don't exit mid-update
             }
 
-
-
-			if (GetAsyncKeyState(VK_PAUSE) & 0x8000 || !keepTraining.load(std::memory_order_relaxed)) // test for pause key
-            {
-                std::cout << "\nQuitting thread #" << threadNum;
-                keepTraining.store(false, std::memory_order_relaxed);
-                break;
-            }
 
             if (GetAsyncKeyState(VK_HOME) & 0x8000) // test for home key (skip cout)
             {
@@ -566,21 +557,12 @@ void training::buildWeights() {
                 useConsole.store(true);
             }
 
-			// Autosave every 50 sequences
-            int seqCount = ++sequencesProcessed;
-
-            if (seqCount % 50 == 0) {
-                std::lock_guard<std::mutex> lock(updateMutex);
-                std::cout << "\nAutosaving at sequence " << seqCount << "...\n";
-                write3DVector("../weights.txt", weights);
-                write2DVector("../embeddings.txt", finalEmbeddings);
-                write3DVector("../FFweights.txt", FFWeights);
-            }
+            completedSequences.fetch_add(1, std::memory_order_relaxed);
         }
 
-    };
+        };
 
-	// Start training loop
+    // Start training loop
     while (keepTraining.load()) {
         keepTraining = true;
         int threads;
@@ -602,7 +584,18 @@ void training::buildWeights() {
             t.join();
         }
 
-        
+        int done = completedSequences.load();
+
+        if (done / 50 > lastAutosave) {
+            lastAutosave = done / 50;
+
+            std::lock_guard<std::mutex> lock(saveMutex);
+            std::cout << "\nAutosaving at sequence " << done << "...\n";
+            write3DVector("../weights.txt", weights);
+            write2DVector("../embeddings.txt", finalEmbeddings);
+            write3DVector("../FFweights.txt", FFWeights);
+        }
+
 
 
         write3DVector("../weights.txt", weights);
@@ -658,7 +651,7 @@ std::vector<std::vector<float>> training::generateEmbeddings(const int embedding
         }
 
         // Append embedding to new_weights
-        updatedEmbeddings[id] = vec; 
+        updatedEmbeddings[id] = vec;
     }
 
     return updatedEmbeddings;
@@ -778,7 +771,6 @@ std::vector<int> training::makeSequence(const std::string& data, const std::unor
     }
 
     /* Tokenization */
-            static bool lastWasSpace = false;
     for (int i = 0; i < dataLower.size(); ++i) {
         char currentChar = dataLower[i];
 
@@ -801,29 +793,17 @@ std::vector<int> training::makeSequence(const std::string& data, const std::unor
         if (isDelimiter) {
             if (!currentWord.empty()) {
                 int id = encode(currentWord, dictionary);
-                tokenizedString.push_back(id >= 0 ? id : unkId);
+                tokenizedString.push_back(id >= 0 ? id : unkId); // replace -1 with <UNK>
                 currentWord.clear();
-                lastWasSpace = false;
             }
 
-            if (currentChar == ' ') {
-                if (!lastWasSpace) {
-                    int id = encode(" ", dictionary);
-                    tokenizedString.push_back(id >= 0 ? id : unkId);
-                    lastWasSpace = true;
-                }
-            }
-            else {
-                int id = encode(std::string(1, currentChar), dictionary);
-                tokenizedString.push_back(id >= 0 ? id : unkId);
-                lastWasSpace = false;
-            }
+
+            int id = encode(std::string(1, currentChar), dictionary);
+            tokenizedString.push_back(id >= 0 ? id : unkId); // replace -1 with <UNK>
         }
         else {
             currentWord += currentChar;
-            lastWasSpace = false;
         }
-
     }
 
     if (!currentWord.empty()) {
@@ -841,7 +821,7 @@ std::vector<int> training::makeSequence(const std::string& data, const std::unor
 
 void training::buildDictionary() {
     std::unordered_map<std::string, int> dictionary = read_dict(); // Load existing dictionary
-	std::unordered_map<std::string, int> timesSeen; // Tracks token frequencies
+    std::unordered_map<std::string, int> timesSeen; // Tracks token frequencies
 
     std::ifstream file("../training_data.txt");
     if (!file.is_open()) throw std::runtime_error("Error opening file");
@@ -893,9 +873,9 @@ void training::buildDictionary() {
             }
         }
 
-		if (isDelimiter) { // If delimiter is hit, log current word & delimiter
+        if (isDelimiter) { // If delimiter is hit, log current word & delimiter
             if (!currentWord.empty()) {
-				std::cout << "Found word: " << currentWord << std::endl;
+                std::cout << "Found word: " << currentWord << std::endl;
                 timesSeen[currentWord]++; // Track word frequency
 
                 currentWord.clear();
@@ -912,7 +892,7 @@ void training::buildDictionary() {
         }
     }
 
-	if (!currentWord.empty()) { // Last word
+    if (!currentWord.empty()) { // Last word
         std::cout << "Found word: " << currentWord << std::endl;
         timesSeen[currentWord]++;
     }
@@ -929,12 +909,12 @@ void training::buildDictionary() {
     // Only keep top 66% of words
     int limit = static_cast<int>(freqVec.size() * 0.75);
     for (int i = 0; i < limit; ++i) {
-		if (freqVec[i].second > 10) { // Remove rare words
+        if (freqVec[i].second > 10) { // Remove rare words
             define(freqVec[i].first, dictionary);
         }
     }
 
-    
+
 
 
     write_dict(dictionary);
@@ -1028,12 +1008,13 @@ std::unordered_map<std::string, int> training::read_dict() {
     nlohmann::json j;
 
     // Check if file opened successfully
-    if (!in.is_open()) {return {};}
+    if (!in.is_open()) { return {}; }
 
-    try {in >> j;} catch (...) {return {};}
+    try { in >> j; }
+    catch (...) { return {}; }
 
     // Return empty map if JSON is null, not an object, or empty
-    if (j.is_null() || !j.is_object() || j.empty()) {return {};}
+    if (j.is_null() || !j.is_object() || j.empty()) { return {}; }
 
     return j.get<std::unordered_map<std::string, int>>();
 }
@@ -1059,7 +1040,7 @@ void training::layerNorm(std::vector<std::vector<float>>& x, float eps) {
     }
 }
 
-void training::layerNormBackward(const std::vector<std::vector<float>>& y, const std::vector<std::vector<float>>& dy,std::vector<std::vector<float>>& dx) {
+void training::layerNormBackward(const std::vector<std::vector<float>>& y, const std::vector<std::vector<float>>& dy, std::vector<std::vector<float>>& dx) {
     int T = y.size();
     int D = y[0].size();
     const float eps = 1e-5f;
@@ -1099,7 +1080,6 @@ void training::layerNormBackward(const std::vector<std::vector<float>>& y, const
         }
     }
 }
-
 int training::sampleToken(const std::vector<float>& probs, float temperature) {
     static std::mt19937 gen(std::random_device{}());
 
