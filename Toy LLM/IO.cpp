@@ -6,124 +6,81 @@
 #include <string>
 
 
-void write2DVector(const std::string& filename, const std::vector<std::vector<float>>& vec) { // Write 2d vector to file
-    std::ofstream out(filename);
+void write2DVector(const std::string& filename, const std::vector<std::vector<float>>& vec) {
+    std::ofstream out(filename, std::ios::binary);
     if (!out) {
-        std::cerr << "Error opening file for writing\n";
+        std::cerr << "Error opening file for writing: " << filename << "\n";
         return;
     }
 
-    for (const auto& row : vec) {
-        for (size_t i = 0; i < row.size(); ++i) {
-            out << row[i];
-            if (i + 1 < row.size())
-                out << ' ';
-        }
-        out << '\n';
-    }
+    size_t rows = vec.size();
+    size_t cols = vec.empty() ? 0 : vec[0].size();
+    out.write(reinterpret_cast<const char*>(&rows), sizeof(rows));
+    out.write(reinterpret_cast<const char*>(&cols), sizeof(cols));
+
+    for (const auto& row : vec)
+        out.write(reinterpret_cast<const char*>(row.data()), row.size() * sizeof(float));
 }
 
 std::vector<std::vector<float>> read2DVector(const std::string& filename, const int embedding_dim) {
-    std::ifstream in(filename);
-    std::vector<std::vector<float>> vec;
-
+    std::ifstream in(filename, std::ios::binary);
     if (!in) {
         std::cerr << "Error opening file for reading: " << filename << "\n";
-        return vec;
+        return {};
     }
 
-    std::string line;
-    while (std::getline(in, line)) {
-        std::istringstream iss(line);
-        std::vector<float> row;
-        float val;
-        while (iss >> val) {
-            row.push_back(val);
-        }
+    size_t rows, cols;
+    in.read(reinterpret_cast<char*>(&rows), sizeof(rows));
+    in.read(reinterpret_cast<char*>(&cols), sizeof(cols));
 
-        // Pad row to embedding_dim
-        if (row.size() < embedding_dim) row.resize(embedding_dim, 0.0f);
-
-        vec.push_back(row);
-    }
+    std::vector<std::vector<float>> vec(rows, std::vector<float>(cols));
+    for (auto& row : vec)
+        in.read(reinterpret_cast<char*>(row.data()), cols * sizeof(float));
 
     return vec;
 }
 
 
-// Write a 3D vector to a file (separate 2D slices with a blank line)
 void write3DVector(const std::string& filename, const std::vector<std::vector<std::vector<float>>>& vec3D) {
-    std::ofstream out(filename);
+    std::ofstream out(filename, std::ios::binary);
     if (!out) {
-        std::cerr << "Error opening file for writing\n";
+        std::cerr << "Error opening file for writing: " << filename << "\n";
         return;
     }
 
+    size_t depth = vec3D.size();
+    out.write(reinterpret_cast<const char*>(&depth), sizeof(depth));
+
     for (const auto& mat : vec3D) {
-        for (const auto& row : mat) {
-            for (size_t i = 0; i < row.size(); ++i) {
-                out << row[i];
-                if (i + 1 < row.size()) out << ' ';
-            }
-            out << '\n';
-        }
-        out << '\n'; // separate 2D slices
+        size_t rows = mat.size();
+        size_t cols = mat.empty() ? 0 : mat[0].size();
+        out.write(reinterpret_cast<const char*>(&rows), sizeof(rows));
+        out.write(reinterpret_cast<const char*>(&cols), sizeof(cols));
+
+        for (const auto& row : mat)
+            out.write(reinterpret_cast<const char*>(row.data()), row.size() * sizeof(float));
     }
 }
 
-// Read a 3D vector from a file, padding everything to embedding_dim
-std::vector<std::vector<std::vector<float>>> read3DVector(const std::string& filename, const int embedding_dim) {
-    std::ifstream in(filename);
-    std::vector<std::vector<std::vector<float>>> vec3D;
-
+std::vector<std::vector<std::vector<float>>> read3DVector(const std::string& filename, const int /*embedding_dim*/) {
+    std::ifstream in(filename, std::ios::binary);
     if (!in) {
         std::cerr << "Error opening file for reading: " << filename << "\n";
-        return vec3D;
+        return {};
     }
 
-    std::string line;
-    std::vector<std::vector<float>> mat;
+    size_t depth;
+    in.read(reinterpret_cast<char*>(&depth), sizeof(depth));
+    std::vector<std::vector<std::vector<float>>> vec3D(depth);
 
-    while (std::getline(in, line)) {
-        if (line.empty()) { // blank line = end of a slice
-            if (!mat.empty()) {
-                vec3D.push_back(mat);
-                mat.clear();
-            }
-            continue;
-        }
+    for (size_t d = 0; d < depth; ++d) {
+        size_t rows, cols;
+        in.read(reinterpret_cast<char*>(&rows), sizeof(rows));
+        in.read(reinterpret_cast<char*>(&cols), sizeof(cols));
 
-        std::istringstream iss(line);
-        std::vector<float> row;
-        float val;
-        while (iss >> val)
-            row.push_back(val);
-
-        // Pad every row to embedding_dim
-        if (row.size() < (size_t)embedding_dim)
-            row.resize(embedding_dim, 0.0f);
-
-        mat.push_back(row);
-    }
-
-    if (!mat.empty())
-        vec3D.push_back(mat); // push final slice
-
-    // Fix all matrices to be perfect squares
-    for (auto& m : vec3D) {
-        // Find the widest row
-        size_t maxCols = 0;
-        for (auto& r : m)
-            if (r.size() > maxCols) maxCols = r.size();
-
-        // Pad all rows to maxCols
-        for (auto& r : m)
-            if (r.size() < maxCols)
-                r.resize(maxCols, 0.0f);
-
-        // Pad rows if needed
-        if (m.size() < (size_t)embedding_dim)
-            m.resize(embedding_dim, std::vector<float>(maxCols, 0.0f));
+        vec3D[d].resize(rows, std::vector<float>(cols));
+        for (auto& row : vec3D[d])
+            in.read(reinterpret_cast<char*>(row.data()), cols * sizeof(float));
     }
 
     return vec3D;

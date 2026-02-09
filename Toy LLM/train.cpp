@@ -22,17 +22,15 @@ using json = nlohmann::json;
 std::mutex saveMutex; // protects shared weights/embeddings
 std::mutex printMutex; // Stops jumbled console output
 
-std::atomic<int> sequencesProcessed;
 std::atomic<bool> keepTraining{ true };
 std::atomic<bool> useConsole{ true };
-std::atomic<int> completedSequences{ 0 };
 int lastAutosave = 0;
+int timesSaved = 0;
 
 /* There are a lot of comments because this is a personal learning project
    - This model is per-sequence SGD*/
 void training::buildWeights() {
     keepTraining.store(true);
-    sequencesProcessed.store(0);
 
     // Load dictionary
     std::unordered_map<std::string, int> dictionary = read_dict();
@@ -283,25 +281,23 @@ void training::buildWeights() {
                         constexpr float TEMPERATURE = 0.8f;
 
                         int predictedToken = -1;
-
-                        // Copy probs so we can zero out forbidden tokens
                         std::vector<float> probs(vocab_size);
-                        for (int v = 0; v < vocab_size; ++v) {
-                            probs[v] = outputProb[t][v];
-                        }
-
-                        // forbid UNK
-                        probs[0] = 0.0f;
-
-                        // sample
-                        predictedToken = sampleToken(probs, TEMPERATURE);
-
                         float entropy = 0.0f;
+
                         for (int v = 0; v < vocab_size; ++v) {
                             float p = outputProb[t][v];
+
+                            // Prepare probability for sampling
+                            probs[v] = (v == 0) ? 0.0f : p; // forbid UNK
+
+                            // Compute entropy
                             if (p > 1e-9f)
                                 entropy -= p * log2(p);
                         }
+
+                        // Sample predicted token using temperature
+                        predictedToken = sampleToken(probs, TEMPERATURE);
+
 
                         float choices = std::pow(2.0f, entropy); // Convert entropy to actual number of options
 
@@ -557,7 +553,20 @@ void training::buildWeights() {
                 useConsole.store(true);
             }
 
-            completedSequences.fetch_add(1, std::memory_order_relaxed);
+
+            if (i % 50 == 0) {
+                std::lock_guard<std::mutex> lock(saveMutex);
+
+				// Create copy to prevent other threads modifying while saving
+                auto weightsCopy = weights;
+                auto FFWeightsCopy = FFWeights;
+                auto embeddingsCopy = finalEmbeddings;
+
+                std::cout << "\nAutosaving at sequence " << i << "...\n";
+                write3DVector("../weights.txt", weightsCopy);
+                write2DVector("../embeddings.txt", embeddingsCopy);
+                write3DVector("../FFweights.txt", FFWeightsCopy);
+            }
         }
 
         };
@@ -583,20 +592,6 @@ void training::buildWeights() {
         for (auto& t : workers) {
             t.join();
         }
-
-        int done = completedSequences.load();
-
-        if (done / 50 > lastAutosave) {
-            lastAutosave = done / 50;
-
-            std::lock_guard<std::mutex> lock(saveMutex);
-            std::cout << "\nAutosaving at sequence " << done << "...\n";
-            write3DVector("../weights.txt", weights);
-            write2DVector("../embeddings.txt", finalEmbeddings);
-            write3DVector("../FFweights.txt", FFWeights);
-        }
-
-
 
         write3DVector("../weights.txt", weights);
         write2DVector("../embeddings.txt", finalEmbeddings);
