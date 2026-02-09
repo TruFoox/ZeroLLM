@@ -80,17 +80,6 @@ void training::buildWeights() {
         // Generate weights for tokens to prevent common tokens being over-represented
         std::cout << "Weighing tokens...\n";
 
-        // Hard downweight for space
-        auto itSpace = dictionary.find(" ");
-        if (itSpace != dictionary.end())
-            tokenLossWeight[itSpace->second] = 0.05f;
-
-        // Downweight ultra-common punctuation
-        for (const std::string& s : { ".", ",", "'","-", "\n", "!", "?" }) {
-            auto it = dictionary.find(s);
-            if (it != dictionary.end())
-                tokenLossWeight[it->second] = 0.2f;
-        }
 
         intput = 0;
     }
@@ -104,9 +93,21 @@ void training::buildWeights() {
 
         if (finalEmbeddings.empty() || weights.empty())
             throw std::runtime_error("No existing embeddings or weights found. Please build first!");
+      
 
         std::cout << "Input previous sequence number: ";
         std::cin >> intput;
+    }
+    // Hard downweight for space
+    auto itSpace = dictionary.find(" ");
+    if (itSpace != dictionary.end())
+        tokenLossWeight[itSpace->second] = 0.05f;
+
+    // Downweight ultra-common punctuation
+    for (const std::string& s : { ".", ",", "'","-", "\n", "!", "?" }) {
+        auto it = dictionary.find(s);
+        if (it != dictionary.end())
+            tokenLossWeight[it->second] = 0.2f;
     }
 
     /* Start training weights */
@@ -536,8 +537,9 @@ void training::buildWeights() {
                 useConsole.store(true);
             }
 
+            int e = ++sequencesProcessed;
 
-            if (++sequencesProcessed % 50 == 0) {
+            if (e % 50 == 0) {
                 std::lock_guard<std::mutex> lock(updateMutex);
                 write3DVector("../weights.bin", weights);
                 write2DVector("../embeddings.bin", finalEmbeddings);
@@ -586,14 +588,13 @@ void training::buildWeights() {
 
 
 // Generate embeddings aligned with dictionary (Creates dictionary of words in training data for later)
-std::vector<std::vector<float>> training::generateEmbeddings(const int embedding_dim, const std::unordered_map<std::string, int>& dictionary) {
-
+std::vector<std::vector<float>> training::generateEmbeddings(const int embedding_dim,const std::unordered_map<std::string, int>& dictionary) {
     std::vector<std::vector<float>> embeddings;
 
+    // Load existing embeddings if present
     if (std::ifstream("../embeddings.bin").good()) {
         embeddings = read2DVector("../embeddings.bin", embedding_dim);
     }
-
 
     std::vector<std::vector<float>> updatedEmbeddings; // New embeddings aligned with dictionary
 
@@ -602,14 +603,30 @@ std::vector<std::vector<float>> training::generateEmbeddings(const int embedding
     std::mt19937 gen(rd());
 
     // Default value range for embeddings
-     // Default range: [-1/sqrt(embedding_dim), 1/sqrt(embedding_dim)] (Reason: It sounds about right, & it scales with larger dimensions)
-    std::uniform_real_distribution<float> dis((-1.0f / sqrt(embedding_dim)), 1.0f / sqrt(embedding_dim));
+    // Default range: [-1/sqrt(embedding_dim), 1/sqrt(embedding_dim)]
+    // (Reason: It sounds about right, & it scales with larger dimensions)
+    std::uniform_real_distribution<float> dis(
+        (-1.0f / sqrt(embedding_dim)),
+        (1.0f / sqrt(embedding_dim))
+    );
 
     // Prepare new vector to store embeddings aligned with dictionary
     updatedEmbeddings.resize(dictionary.size());
 
-    // Iterate through dictionary
-    for (const auto& [token, id] : dictionary) {
+    std::vector<std::pair<std::string, int>> sortedDict;
+    sortedDict.reserve(dictionary.size());
+
+    for (const auto& pair : dictionary)
+        sortedDict.emplace_back(pair.first, pair.second);
+
+    // Sort by token ID to guarantee deterministic row alignment
+    std::sort(sortedDict.begin(), sortedDict.end(),
+        [](const auto& a, const auto& b) {
+            return a.second < b.second;
+        });
+
+    // Iterate through dictionary 
+    for (const auto& [token, id] : sortedDict) {
 
         std::vector<float> vec; // Stores embedding for current token
 
@@ -625,12 +642,13 @@ std::vector<std::vector<float>> training::generateEmbeddings(const int embedding
             }
         }
 
-        // Append embedding to new_weights
+        // Assign embedding to correct token ID
         updatedEmbeddings[id] = vec;
     }
 
     return updatedEmbeddings;
 }
+
 
 
 
@@ -898,22 +916,18 @@ void training::buildDictionary() {
 }
 
 
-
-
-void training::define(const std::string& text, std::unordered_map<std::string, int>& dictionary) {
+void training::define(const std::string& text,
+    std::unordered_map<std::string, int>& dictionary) {
     // Define new token in dictionary
-    if (text.empty() || text.find('\0') != std::string::npos) return; // skip nulls
+    if (text.empty() || text.find('\0') != std::string::npos) return;
 
-    if (dictionary.find(text) == dictionary.end()) { // If token not in dictionary
-        dictionary[text] = dictionary.size(); // Get next available value
-
+    if (dictionary.find(text) == dictionary.end()) {
+        int id = static_cast<int>(dictionary.size()); // SAFE ONLY DURING DICT BUILD
+        dictionary[text] = id;
         std::cout << "Token: \"" << text << "\" added to dictionary\n";
     }
-    else if (text != " ") {
-        // Token already exists, do nothing
-        // std::cout << "Token: \"" << text << "\" already in dictionary\n";
-    }
 }
+
 
 
 
@@ -1046,12 +1060,7 @@ void training::layerNormBackward(const std::vector<std::vector<float>>& x, const
 
         for (int d = 0; d < D; ++d) {
             float xm = x[t][d] - mean;
-            dx[t][d] =
-                inv_std * (
-                    dy[t][d]
-                    - sum_dy / D
-                    - xm * sum_dy_xm / (D * (var + eps))
-                    );
+            dx[t][d] = inv_std * (dy[t][d] - sum_dy / D - xm * sum_dy_xm / (D * (var + eps)));
         }
     }
 }
