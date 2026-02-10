@@ -26,6 +26,10 @@ std::atomic<bool> keepTraining{ true };
 std::atomic<bool> useConsole{ true };
 std::atomic<int> sequencesProcessed{ 0 };
 
+int startnew;
+std::vector<std::vector<float>> finalEmbeddings;
+std::vector<std::vector<std::vector<float>>> weights, FFWeights;
+
 /* There are a lot of comments because this is a personal learning project
    - This model is per-sequence SGD*/
 void training::buildWeights() {
@@ -56,10 +60,6 @@ void training::buildWeights() {
     std::cout << "Build new model weights? (y/n): ";
     std::cin >> input;
 
-
-    std::vector<std::vector<float>> finalEmbeddings;
-    std::vector<std::vector<std::vector<float>>> weights, FFWeights;
-
     if (input == 'y' || input == 'Y') {
         // Generate embeddings and positional encodings
         std::cout << "Generating embeddings...\n";
@@ -84,17 +84,27 @@ void training::buildWeights() {
         intput = 0;
     }
     else {
-        // Load existing embeddings and weights
-        std::cout << "Loading existing embeddings and weights...\n";
+        bool weightsEmpty = true;
 
-        finalEmbeddings = read2DVector("../embeddings.bin", embedding_dim);
-        weights = read3DVector("../weights.bin", embedding_dim);
-        FFWeights = read3DVector("../FFweights.bin", embedding_dim);
+        for (const auto& mat : weights) {       // iterate Q, K, V, WO
+            if (!mat.empty() && !mat[0].empty()) {
+                weightsEmpty = false;
+                break;
+            }
+        }
 
-        if (finalEmbeddings.empty() || weights.empty())
-            throw std::runtime_error("No existing embeddings or weights found. Please build first!");
-      
+        if (weightsEmpty) {
+            // Load existing embeddings and weights
+            std::cout << "Loading existing embeddings and weights...\n";
 
+            finalEmbeddings = read2DVector("../embeddings.bin", embedding_dim);
+            weights = read3DVector("../weights.bin", embedding_dim);
+            FFWeights = read3DVector("../FFweights.bin", embedding_dim);
+
+            if (finalEmbeddings.empty() || weights.empty())
+                throw std::runtime_error("No existing embeddings or weights found. Please build first!");
+
+        }
         std::cout << "Input previous sequence number: ";
         std::cin >> intput;
     }
@@ -132,6 +142,8 @@ void training::buildWeights() {
         std::vector<std::vector<float>> output;
 
         for (int i = intput + threadNum; i < totalSequences; i += numThreads) {
+            if (!keepTraining.load(std::memory_order_relaxed))
+                return;
 
             // Zero per-sequence gradients
             for (auto& r : gradWQ) std::fill(r.begin(), r.end(), 0.0f);
@@ -280,7 +292,11 @@ void training::buildWeights() {
                         probs[0] = 0.0f;
 
                         // sample
-                        predictedToken = sampleToken(probs, TEMPERATURE);
+                        //predictedToken = sampleToken(probs, TEMPERATURE);
+
+
+                        predictedToken = std::distance(probs.begin(), std::max_element(probs.begin(), probs.end()));
+
                         float entropy = 0.0f;
                         for (int v = 0; v < vocab_size; ++v) {
                             float p = outputProb[t][v];
@@ -520,13 +536,6 @@ void training::buildWeights() {
 
 
 
-            if (GetAsyncKeyState(VK_PAUSE) & 0x8000 || !keepTraining.load(std::memory_order_relaxed)) // test for pause key
-            {
-                std::cout << "\nQuitting thread #" << threadNum;
-                keepTraining.store(false, std::memory_order_relaxed);
-                break;
-            }
-
             if (GetAsyncKeyState(VK_HOME) & 0x8000) // test for home key (skip cout)
             {
                 useConsole.store(false);
@@ -541,6 +550,8 @@ void training::buildWeights() {
 
             if (e % 50 == 0) {
                 std::lock_guard<std::mutex> lock(updateMutex);
+
+                std::cout << "[Autosave] Saved at sequence #" << e << "\n";
                 write3DVector("../weights.bin", weights);
                 write2DVector("../embeddings.bin", finalEmbeddings);
                 write3DVector("../FFweights.bin", FFWeights);
@@ -551,38 +562,46 @@ void training::buildWeights() {
         };
 
     // Start training loop
-    while (keepTraining.load()) {
+    while (true) {
         keepTraining = true;
-        int threads;
 
+        int threads;
         std::cout << "Input # of threads: ";
         std::cin >> threads;
-
 
         std::vector<std::thread> workers;
         workers.reserve(threads);
 
-        // launch all threads
-        for (int i = 0; i < threads; i++) {
+        for (int i = 0; i < threads; i++)
             workers.emplace_back(trainSubset, i, threads);
+
+        // Non-blocking wait: check every 0.1s if threads finished
+        while (true) {
+            bool allDone = true;
+            for (auto& t : workers) {
+                if (t.joinable()) allDone = false;
+            }
+
+            if (allDone) break;
+
+            // Optional: allow quitting with some key
+            if (GetAsyncKeyState(VK_DELETE) & 0x8000) {
+                keepTraining = false; // tell threads to exit
+                break;
+            }
+
+            Sleep(100); // small sleep to avoid busy loop
         }
 
-        // join all threads
+        // Join all threads cleanly
         for (auto& t : workers) {
-            t.join();
+            if (t.joinable()) t.join();
         }
 
-
-
-
-        write3DVector("../weights.bin", weights);
-        write2DVector("../embeddings.bin", finalEmbeddings);
-        write3DVector("../FFweights.bin", FFWeights);
-
-        std::cout << "\nTraining complete!\n";
-        keepTraining.store(false);
-
+        std::cout << "Threads stopped. Looping back.\n";
     }
+
+
 }
 
 
@@ -605,10 +624,7 @@ std::vector<std::vector<float>> training::generateEmbeddings(const int embedding
     // Default value range for embeddings
     // Default range: [-1/sqrt(embedding_dim), 1/sqrt(embedding_dim)]
     // (Reason: It sounds about right, & it scales with larger dimensions)
-    std::uniform_real_distribution<float> dis(
-        (-1.0f / sqrt(embedding_dim)),
-        (1.0f / sqrt(embedding_dim))
-    );
+    std::uniform_real_distribution<float> dis((-1.0f / sqrt(embedding_dim)), (1.0f / sqrt(embedding_dim)));
 
     // Prepare new vector to store embeddings aligned with dictionary
     updatedEmbeddings.resize(dictionary.size());
