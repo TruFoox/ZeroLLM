@@ -62,7 +62,7 @@ void write3DVector(const std::string& filename, const std::vector<std::vector<st
     }
 }
 
-std::vector<std::vector<std::vector<float>>> read3DVector(const std::string& filename, const int /*embedding_dim*/) {
+std::vector<std::vector<std::vector<float>>> read3DVector(const std::string& filename, const int embedding_dim) {
     std::ifstream in(filename, std::ios::binary);
     if (!in) {
         std::cerr << "Error opening file for reading: " << filename << "\n";

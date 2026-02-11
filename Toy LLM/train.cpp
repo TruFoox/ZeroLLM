@@ -46,7 +46,7 @@ void training::buildWeights() {
     std::vector<float> tokenLossWeight(vocab_size, 1.0f);
     int embedding_dim = floor(25 * log2(vocab_size)); // Automatic embedding size based on vocab size
     float learning_rate = 2e-4;
-    constexpr float TEMPERATURE = 1.0f;
+    constexpr float TEMPERATURE = 0.9f;
 
     // Positional encoding:
     // - Tokens by themselves don't tell the model their position in the sentence.
@@ -108,6 +108,20 @@ void training::buildWeights() {
         std::cout << "Input previous sequence number: ";
         std::cin >> intput;
     }
+    
+
+
+    /* Start training weights */
+
+    std::ifstream file("../training_data.txt");
+    if (!file.is_open()) throw std::runtime_error("Error opening file");
+
+    std::string data((std::istreambuf_iterator<char>(file)),
+        std::istreambuf_iterator<char>());
+
+    std::vector<int> sequence = makeSequence(data, dictionary);
+    int totalSequences = (sequence.size() + 127) / 128; // ceil division
+
     // Hard downweight for space
     auto itSpace = dictionary.find(" ");
     if (itSpace != dictionary.end())
@@ -120,15 +134,6 @@ void training::buildWeights() {
             tokenLossWeight[it->second] = 0.2f;
     }
 
-    /* Start training weights */
-
-    std::ifstream file("../training_data.txt");
-    if (!file.is_open()) throw std::runtime_error("Error opening file");
-
-    std::string data((std::istreambuf_iterator<char>(file)),
-        std::istreambuf_iterator<char>());
-    std::vector<int> sequence = makeSequence(data, dictionary);
-    int totalSequences = (sequence.size() + 127) / 128; // ceil division
 
     // Training loop over sequences of length 128
     auto trainSubset = [&](int threadNum, int numThreads) mutable {
@@ -349,9 +354,6 @@ void training::buildWeights() {
 
             // last position predicts nothing
             std::fill(error.back().begin(), error.back().end(), 0.0f);
-
-
-
             std::fill(error.back().begin(), error.back().end(), 0.0f);
             std::fill(gradEmbeddings.back().begin(), gradEmbeddings.back().end(), 0.0f);
 
@@ -410,7 +412,7 @@ void training::buildWeights() {
             std::vector<std::vector<float>> dContext_ln = dContext;
             training::layerNormBackward(hidden_pre_ln1, dContext_ln, dContext);
 
-
+         
 
 
             // Values (V) contribution:
@@ -436,11 +438,11 @@ void training::buildWeights() {
                     dA[m][n] = 0.0f;
 
             // softmax backward
-            std::vector<std::vector<float>> dScores(sequenceLength,std::vector<float>(sequenceLength, 0.0f));
+            std::vector<std::vector<float>> dScores(sequenceLength, std::vector<float>(sequenceLength, 0.0f));
 
             for (int i = 0; i < sequenceLength; ++i) {
                 float dot = 0.0f;
-                for (int j = 0; j <= i; ++j) 
+                for (int j = 0; j <= i; ++j)
                     dot += dA[i][j] * attentionWeights[i][j];
 
                 for (int j = 0; j < sequenceLength; ++j) {
@@ -528,9 +530,22 @@ void training::buildWeights() {
 
 
                 // Embeddings
-                for (auto& [token, grad] : tokenGradients)
+                for (auto& [token, grad] : tokenGradients) {
+
+                    float invCount = 1.0f;
+
+                    int count = 0;
+
+                    for (int t = 0; t < sequenceLength; ++t)
+
+                        if (tokenSequence[t] == token) count++;
+
+                    if (count > 0) invCount = 1.0f / count;
+
                     for (int d = 0; d < embedding_dim; ++d)
-                        finalEmbeddings[token][d] -= learning_rate * grad[d];
+                        finalEmbeddings[token][d] -= learning_rate * grad[d] * invCount;
+
+                }
 
             }
 
@@ -584,7 +599,7 @@ void training::buildWeights() {
 
             if (allDone) break;
 
-            // Optional: allow quitting with some key
+            // allow quitting with some key
             if (GetAsyncKeyState(VK_DELETE) & 0x8000) {
                 keepTraining = false; // tell threads to exit
                 break;
@@ -607,7 +622,7 @@ void training::buildWeights() {
 
 
 // Generate embeddings aligned with dictionary (Creates dictionary of words in training data for later)
-std::vector<std::vector<float>> training::generateEmbeddings(const int embedding_dim,const std::unordered_map<std::string, int>& dictionary) {
+std::vector<std::vector<float>> training::generateEmbeddings(const int embedding_dim, const std::unordered_map<std::string, int>& dictionary) {
     std::vector<std::vector<float>> embeddings;
 
     // Load existing embeddings if present
@@ -1045,7 +1060,7 @@ void training::layerNorm(std::vector<std::vector<float>>& x, float eps) {
     }
 }
 
-void training::layerNormBackward(const std::vector<std::vector<float>>& x, const std::vector<std::vector<float>>& dy,std::vector<std::vector<float>>& dx) {
+void training::layerNormBackward(const std::vector<std::vector<float>>& x, const std::vector<std::vector<float>>& dy, std::vector<std::vector<float>>& dx) {
     int T = x.size();
     int D = x[0].size();
     const float eps = 1e-5f;

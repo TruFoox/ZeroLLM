@@ -1,6 +1,6 @@
 # ZeroLLM (C++ Transformer, No libraries)
 
-A small (~900 lines in train.cpp) Transformer-style language model implemented **entirely from scratch in C++**, using no external LLM libraries.
+A small (~1100 lines in train.cpp) Transformer-style language model implemented **entirely from scratch in C++**, using no external LLM libraries.
 
 This project exists to learn and experiment with the *actual mechanics* of Transformers: attention, softmax, loss, and backprop, without ML frameworks.
 
